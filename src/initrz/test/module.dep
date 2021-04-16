@@ -1,0 +1,3 @@
+kernel/drivers/video/nvidia.ko.xz:
+kernel/drivers/video/nvidia-uvm.ko.xz: kernel/drivers/video/nvidia.ko.xz
+kernel/net/qrtr/qrtr-mhi.ko.xz: kernel/net/qrtr/qrtr.ko.xz kernel/net/qrtr/ns.ko.xz kernel/drivers/bus/mhi/core/mhi.ko.xz
