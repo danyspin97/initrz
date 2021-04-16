@@ -103,7 +103,7 @@ fn initrz() -> Result<()> {
 
     info!("creating internal objects");
     let module_loader = Arc::new(ModuleLoader::init(&get_kernel_version()?)?);
-    let device_handler = Arc::new(Mutex::new(DeviceHandler::init("/crypttab", &cmdline)?));
+    let mut device_handler = DeviceHandler::init("/crypttab", &cmdline)?;
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
     info!("loading qemu modules");
@@ -124,26 +124,15 @@ fn initrz() -> Result<()> {
     std::mem::drop(cache);
 
     info!("creating channels");
-    let (device_tx, device_rx) = channel::<String>();
-    let (res_tx, res_rx) = channel::<Result<()>>();
+    let (tx, rx) = channel::<String>();
 
-    let mut guard = device_handler.lock().unwrap();
     info!("unlocking available devices");
-    guard.unlock_available_devices()?;
+    device_handler.unlock_available_devices()?;
     info!("searching for root");
-    guard.search_root()?;
-    std::mem::drop(guard);
+    device_handler.search_root()?;
 
     info!("starting uevent listener thread");
-    thread::spawn(move || uevent_listener.listen(device_tx));
-    let device_handler_clone = device_handler.clone();
-    info!("starting device mounter thread");
-    thread::spawn(move || {
-        device_handler_clone
-            .lock()
-            .unwrap()
-            .listen(device_rx, res_tx)
-    });
+    thread::spawn(move || uevent_listener.listen(tx));
 
     info!("traversing /sys modalias files");
     Vec::<PathBuf>::try_from(
@@ -159,23 +148,13 @@ fn initrz() -> Result<()> {
     .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
 
     info!("receiving mount results");
-    loop {
-        let res = res_rx.try_recv();
-        if res.is_err() {
-            match res.unwrap_err() {
-                std::sync::mpsc::TryRecvError::Disconnected => break,
-                _ => {}
-            }
-        } else {
-            res.unwrap()?;
-        }
-    }
+    device_handler.listen(rx)?;
 
     info!("moving /new_root into /");
     // switch_root
     // https://github.com/mirror/busybox/blob/9ec836c033fc6e55e80f3309b3e05acdf09bb297/util-linux/switch_root.c#L297
     env::set_current_dir("/new_root")?;
-    device_handler.lock().unwrap().move_root_mount()?;
+    device_handler.move_root_mount()?;
     info!("chrooting");
     chroot(".").with_context(|| "unable to chroot")?;
 

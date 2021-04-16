@@ -110,19 +110,21 @@ impl DeviceHandler {
         })
     }
 
-    pub fn listen(&mut self, device_rx: Receiver<String>, res_tx: Sender<Result<()>>) {
-        let timeout = Duration::new(3, 0);
+    pub fn listen(&mut self, device_rx: Receiver<String>) -> Result<()> {
         loop {
-            let received = device_rx.recv_timeout(timeout);
+            let received = device_rx.try_recv();
             if received.is_err() {
+                match received.unwrap_err() {
+                    std::sync::mpsc::TryRecvError::Disconnected => break,
+                    _ => {}
+                }
                 break;
             }
             let received = received.unwrap();
-            if res_tx.send(self.handle(&received)).is_err() {
-                warn!("unable to send device mount result to main");
-                break;
-            }
+            self.handle(&received)?;
         }
+
+        Ok(())
     }
 
     fn get_encrypted_device(&self, path: &str) -> Option<&EncryptedDevice> {
