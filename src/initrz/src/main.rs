@@ -1,37 +1,36 @@
 mod device_handler;
+mod encrypted_device;
+mod encryption_type;
+mod filesystem;
+mod identifier;
 mod module_loader;
+mod mounts;
+mod root_device;
 mod uevent_listener;
+mod unlock_type;
 mod utils;
 
 use anyhow::{bail, Context, Result};
 use dowser::Dowser;
 use libc;
-use log::{error, info, trace};
-use mount_api::Fs;
-use mount_api::FsmountFlags;
-use mount_api::FsopenFlags;
-use mount_api::Mount;
-use mount_api::MountAttrFlags;
-use mount_api::MoveMountFlags;
+use log::{error, info};
 use nix::unistd::chroot;
 use rayon::prelude::*;
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
-use std::convert::TryFrom;
-use std::env;
-use std::ffi::CString;
-use std::fs;
-use std::fs::File;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{mpsc::channel, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{
+    convert::TryFrom,
+    env, fs,
+    os::unix::process::CommandExt,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{mpsc::channel, Arc},
+    thread,
+};
 
 use device_handler::DeviceHandler;
 use module_loader::ModuleLoader;
+use mounts::Mounts;
 use uevent_listener::UeventListener;
 use utils::get_blkid_cache;
 
@@ -56,19 +55,6 @@ fn get_kernel_version() -> Result<String> {
     }
 }
 
-fn mount_special_filesystem(parent_dir: RawFd, mount_folder: &str, fs_name: &str) -> Result<Mount> {
-    let fs = Fs::open(&CString::new(fs_name)?, FsopenFlags::empty())
-        .with_context(|| format!("failed to open a filesystem context of type {}", fs_name))?;
-    fs.create()
-        .with_context(|| format!("unable to create filesystem context for type {}", fs_name))?;
-    let mount = fs.mount(FsmountFlags::empty(), MountAttrFlags::empty())?;
-
-    fs::create_dir_all(Path::new(mount_folder))
-        .with_context(|| format!("unable to create directory {:?}", mount_folder))?;
-    mount.move_mount(parent_dir, mount_folder, MoveMountFlags::empty())?;
-    Ok(mount)
-}
-
 pub fn parse_cmdline() -> Result<Vec<String>> {
     Ok(String::from_utf8(fs::read("/proc/cmdline")?)?
         .split_whitespace()
@@ -86,17 +72,8 @@ fn initrz() -> Result<()> {
         ColorChoice::Auto,
     )?;
 
-    let root_dir = File::open("/").with_context(|| format!("failed to open root directory"))?;
-
-    info!("mounting /dev");
-    let dev_mount = mount_special_filesystem(root_dir.as_raw_fd(), "dev", "devtmpfs")
-        .with_context(|| format!("unable to mount /dev"))?;
-    info!("mounting /sys");
-    let sys_mount = mount_special_filesystem(root_dir.as_raw_fd(), "sys", "sysfs")
-        .with_context(|| format!("unable to mount /sys"))?;
-    info!("mounting /proc");
-    let proc_mount = mount_special_filesystem(root_dir.as_raw_fd(), "proc", "proc")
-        .with_context(|| format!("unable to mount /proc"))?;
+    info!("mounting special filesystems");
+    let mounts = Arc::new(Mounts::with_default_mounts()?);
 
     info!("parsing command line");
     let cmdline = parse_cmdline()?;
@@ -153,13 +130,15 @@ fn initrz() -> Result<()> {
     info!("moving /new_root into /");
     // switch_root
     // https://github.com/mirror/busybox/blob/9ec836c033fc6e55e80f3309b3e05acdf09bb297/util-linux/switch_root.c#L297
-    env::set_current_dir("/new_root")?;
-    device_handler.move_root_mount()?;
+    mounts.mount_root(
+        device_handler
+            .get_root()
+            .with_context(|| "unable to find root device")?,
+    )?;
+
     info!("chrooting");
     chroot(".").with_context(|| "unable to chroot")?;
-
     env::set_current_dir("/")?;
-
     Command::new("/sbin/init").exec();
 
     Ok(())

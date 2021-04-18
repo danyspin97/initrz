@@ -3,7 +3,6 @@ use dowser::Dowser;
 use glob::{glob, Pattern};
 use log::warn;
 use nix::kmod::{finit_module, ModuleInitFlags};
-use rayon::prelude::*;
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
@@ -37,7 +36,6 @@ pub fn parse_module_dep(filename: &Path) -> Result<HashMap<String, Module>> {
         File::open(filename).with_context(|| format!("unable to open filename {:?}", filename))?;
     let lines = BufReader::new(file).lines();
     Ok(lines
-        .par_bridge()
         .filter_map(|line: Result<String, _>| line.ok())
         .map(|line| -> Result<(String, Module)> {
             let token_index = line
@@ -105,7 +103,6 @@ pub fn parse_module_alias(filename: &Path) -> Result<Vec<ModAlias>> {
 
     Ok(lines
         .filter_map(|line: Result<String, _>| line.ok())
-        .par_bridge()
         .map(|line| -> Result<ModAlias> {
             let mut split = line[6..].splitn(2, ' ');
             Ok(ModAlias {
@@ -183,10 +180,7 @@ impl ModuleLoader {
             .with_path(&self.kernel_root),
         )?
         .iter()
-        .map(|module| {
-            print!("here {:?}", module);
-            module.file_name()
-        })
+        .map(|module| module.file_name())
         .filter(|module| module.is_some())
         .filter_map(|module| module.unwrap().to_str())
         .try_for_each(|modalias| self.load_modalias(modalias))?;
