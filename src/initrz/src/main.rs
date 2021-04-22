@@ -134,6 +134,7 @@ fn initrz() -> Result<()> {
         device_handler
             .get_root()
             .with_context(|| "unable to find root device")?,
+        &module_loader,
     )?;
 
     info!("chrooting");

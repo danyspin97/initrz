@@ -6,8 +6,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use log::warn;
 use mount_api::{Fs, FsmountFlags, FsopenFlags, Mount, MountAttrFlags, MoveMountFlags};
 
+use crate::module_loader::ModuleLoader;
 use crate::root_device::RootDevice;
 
 pub struct Mounts {
@@ -33,9 +35,17 @@ impl Mounts {
         })
     }
 
-    pub fn mount_root(&self, root: RootDevice) -> Result<()> {
+    pub fn mount_root(&self, root: RootDevice, module_loader: &ModuleLoader) -> Result<()> {
+        // Load essential module
+        module_loader.load_module("crc32c_generic")?;
+
         let devname = root.devpath.unwrap();
-        let filesystem = CString::new(root.filesystem.get_filesystem_string(&devname)?)?;
+        let filesystem = root.filesystem.get_filesystem_string(&devname)?;
+        if !module_loader.load_module(&filesystem)? {
+            // Do not fail here because the module could be builtin
+            warn!("module {} not found", filesystem);
+        }
+        let filesystem = CString::new(filesystem)?;
 
         let fs = Fs::open(&filesystem, FsopenFlags::empty()).with_context(|| {
             format!(
