@@ -59,8 +59,8 @@ impl Mounts {
             .with_context(|| format!("unable to set source {:?} for filesystem", devname))?;
         fs.create().with_context(|| {
             format!(
-                "unable to create filesystem context for type {:?}",
-                &filesystem
+                "unable to create filesystem context of type {:?} for device {:?}",
+                &filesystem, devname
             )
         })?;
         let mount = fs
