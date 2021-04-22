@@ -148,6 +148,6 @@ fn initrz() -> Result<()> {
 fn main() {
     if let Err(err) = initrz() {
         error!("{:?}", err);
-        Command::new("ash").exec();
+        Command::new("busybox").arg("sh").exec();
     }
 }
