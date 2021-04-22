@@ -60,6 +60,8 @@ pub fn parse_module_dep(filename: &Path) -> Result<HashMap<String, Module>> {
                         warn!("{} is not a valid module name", dep);
                     }
                 }
+
+                deps.reverse();
             }
             Ok((
                 module,
@@ -210,9 +212,9 @@ mod tests {
         let mut expected_map = HashMap::new();
 
         let mut mhi_deps: Vec<String> = Vec::new();
-        mhi_deps.push("qrtr".to_string());
-        mhi_deps.push("ns".to_string());
         mhi_deps.push("mhi".to_string());
+        mhi_deps.push("ns".to_string());
+        mhi_deps.push("qrtr".to_string());
         expected_map.insert(
             "qrtr-mhi".to_string(),
             Module {
