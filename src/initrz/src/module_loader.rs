@@ -154,9 +154,12 @@ impl ModuleLoader {
                 return Ok(false);
             }
             let module = module.unwrap();
-            for dep in &module.deps {
-                self.load_module(&dep)?;
-            }
+            // Some modules could be builtin, do not block
+            module
+                .deps
+                .iter()
+                .map(|dep| -> Result<bool> { self.load_module(&dep) })
+                .collect::<Result<Vec<_>>>()?;
             let mut modules_loaded = self.modules_loaded.write().unwrap();
             if !modules_loaded.contains(module_name) {
                 modules_loaded.insert(String::from(module_name));
