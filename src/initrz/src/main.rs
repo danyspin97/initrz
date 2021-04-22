@@ -124,7 +124,7 @@ fn initrz() -> Result<()> {
     .filter_map(|modalias| modalias.to_str())
     .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
 
-    info!("receiving mount results");
+    info!("receiving unlock results");
     device_handler.listen(rx)?;
 
     info!("moving /new_root into /");
