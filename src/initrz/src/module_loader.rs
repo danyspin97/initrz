@@ -66,7 +66,14 @@ pub fn parse_module_dep(filename: &Path) -> Result<HashMap<String, Module>> {
             Ok((
                 module,
                 Module {
-                    filename: String::from(module_filename),
+                    filename: Path::new(module_filename)
+                        .with_extension("")
+                        .as_os_str()
+                        .to_str()
+                        .with_context(|| {
+                            format!("unable to convert string '{}' to OsString", module_filename)
+                        })?
+                        .to_string(),
                     deps,
                 },
             ))
@@ -156,10 +163,9 @@ impl ModuleLoader {
             }
             // unlock so that other modules can be loaded in parallel
             drop(modules_loaded);
-            // let filename = self.kernel_root.join(&module.filename);
-            // TODO: Remove this
-            let filename = self.kernel_root.join(format!("kernel/{}.ko", module_name));
-            let module_file = File::open(filename)?;
+            let filename = self.kernel_root.join(&module.filename);
+            let module_file =
+                File::open(&filename).with_context(|| format!("unable to find {:?}", filename))?;
             finit_module(
                 &module_file.as_raw_fd(),
                 &CString::new("")?,
@@ -179,13 +185,17 @@ impl ModuleLoader {
                     None => false,
                 }
             })
-            .with_path(&self.kernel_root),
+            .with_path(&self.kernel_root.join("kernel")),
         )?
         .iter()
-        .map(|module| module.file_name())
+        .map(|module| module.file_stem())
         .filter(|module| module.is_some())
         .filter_map(|module| module.unwrap().to_str())
-        .try_for_each(|modalias| self.load_modalias(modalias))?;
+        .map(|module| -> Result<()> {
+            self.load_module(module)?;
+            Ok(())
+        })
+        .collect::<Result<()>>()?;
 
         Ok(())
     }
@@ -218,7 +228,7 @@ mod tests {
         expected_map.insert(
             "qrtr-mhi".to_string(),
             Module {
-                filename: String::from("kernel/net/qrtr/qrtr-mhi.ko.xz"),
+                filename: String::from("kernel/net/qrtr/qrtr-mhi.ko"),
                 deps: mhi_deps,
             },
         );
@@ -228,7 +238,7 @@ mod tests {
         expected_map.insert(
             "nvidia-uvm".to_string(),
             Module {
-                filename: String::from("kernel/drivers/video/nvidia-uvm.ko.xz"),
+                filename: String::from("kernel/drivers/video/nvidia-uvm.ko"),
                 deps: nvidia_uvm_deps,
             },
         );
@@ -236,7 +246,7 @@ mod tests {
         expected_map.insert(
             "nvidia".to_string(),
             Module {
-                filename: String::from("kernel/drivers/video/nvidia.ko.xz"),
+                filename: String::from("kernel/drivers/video/nvidia.ko"),
                 deps: Vec::new(),
             },
         );
