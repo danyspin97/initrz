@@ -80,7 +80,7 @@ fn initrz() -> Result<()> {
 
     info!("creating internal objects");
     let module_loader = Arc::new(ModuleLoader::init(&get_kernel_version()?)?);
-    let mut device_handler = DeviceHandler::init("/crypttab", &cmdline)?;
+    let mut device_handler = DeviceHandler::init("/etc/crypttab.initramfs", &cmdline)?;
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
     info!("loading qemu modules");
