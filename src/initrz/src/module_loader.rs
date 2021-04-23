@@ -179,30 +179,6 @@ impl ModuleLoader {
         Ok(true)
     }
 
-    pub fn load_all_modules(&self) -> Result<()> {
-        Vec::<PathBuf>::try_from(
-            Dowser::filtered(|p: &Path| {
-                let ext = p.extension();
-                match ext {
-                    Some(ext) => ext == "ko",
-                    None => false,
-                }
-            })
-            .with_path(&self.kernel_root.join("kernel")),
-        )?
-        .iter()
-        .map(|module| module.file_stem())
-        .filter(|module| module.is_some())
-        .filter_map(|module| module.unwrap().to_str())
-        .map(|module| -> Result<()> {
-            self.load_module(module)?;
-            Ok(())
-        })
-        .collect::<Result<()>>()?;
-
-        Ok(())
-    }
-
     pub fn load_modalias(&self, modalias: &str) -> Result<()> {
         let modalias = &self.aliases.iter().find(|m| m.pattern.matches(modalias));
         if let Some(modalias) = modalias {
