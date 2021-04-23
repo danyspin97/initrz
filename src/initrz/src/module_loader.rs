@@ -2,13 +2,14 @@ use anyhow::{bail, Context, Result};
 use dowser::Dowser;
 use glob::{glob, Pattern};
 use log::{debug, warn};
-use nix::kmod::{finit_module, ModuleInitFlags};
+use nix::kmod::{init_module, ModuleInitFlags};
+use xz2::bufread::XzDecoder;
 
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ffi::CString;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::mem::drop;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -66,14 +67,7 @@ pub fn parse_module_dep(filename: &Path) -> Result<HashMap<String, Module>> {
             Ok((
                 module,
                 Module {
-                    filename: Path::new(module_filename)
-                        .with_extension("")
-                        .as_os_str()
-                        .to_str()
-                        .with_context(|| {
-                            format!("unable to convert string '{}' to OsString", module_filename)
-                        })?
-                        .to_string(),
+                    filename: module_filename.to_string(),
                     deps,
                 },
             ))
@@ -169,12 +163,12 @@ impl ModuleLoader {
             let filename = self.kernel_root.join(&module.filename);
             let module_file =
                 File::open(&filename).with_context(|| format!("unable to find {:?}", filename))?;
-            finit_module(
-                &module_file.as_raw_fd(),
-                &CString::new("")?,
-                ModuleInitFlags::empty(),
-            )
-            .with_context(|| format!("finit_module call failed when loading {}", module_name))?;
+            let mut buf = Vec::new();
+            XzDecoder::new(BufReader::new(module_file)).read_to_end(&mut buf)?;
+
+            init_module(&buf, &CString::new("")?).with_context(|| {
+                format!("finit_module call failed when loading {}", module_name)
+            })?;
         }
 
         Ok(true)
@@ -208,7 +202,7 @@ mod tests {
         expected_map.insert(
             "qrtr-mhi".to_string(),
             Module {
-                filename: String::from("kernel/net/qrtr/qrtr-mhi.ko"),
+                filename: String::from("kernel/net/qrtr/qrtr-mhi.ko.xz"),
                 deps: mhi_deps,
             },
         );
@@ -218,7 +212,7 @@ mod tests {
         expected_map.insert(
             "nvidia-uvm".to_string(),
             Module {
-                filename: String::from("kernel/drivers/video/nvidia-uvm.ko"),
+                filename: String::from("kernel/drivers/video/nvidia-uvm.ko.xz"),
                 deps: nvidia_uvm_deps,
             },
         );
@@ -226,7 +220,7 @@ mod tests {
         expected_map.insert(
             "nvidia".to_string(),
             Module {
-                filename: String::from("kernel/drivers/video/nvidia.ko"),
+                filename: String::from("kernel/drivers/video/nvidia.ko.xz"),
                 deps: Vec::new(),
             },
         );
