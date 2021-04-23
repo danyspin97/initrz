@@ -173,7 +173,8 @@ impl ModuleLoader {
                 &module_file.as_raw_fd(),
                 &CString::new("")?,
                 ModuleInitFlags::empty(),
-            )?;
+            )
+            .with_context(|| format!("finit_module call failed when loading {}", module_name))?;
         }
 
         Ok(true)
