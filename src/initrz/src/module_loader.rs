@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use dowser::Dowser;
 use glob::{glob, Pattern};
-use log::warn;
+use log::{debug, warn};
 use nix::kmod::{finit_module, ModuleInitFlags};
 
 use std::collections::{HashMap, HashSet};
@@ -149,6 +149,7 @@ impl ModuleLoader {
         let modules_loaded = self.modules_loaded.read().unwrap();
         if !modules_loaded.contains(module_name) {
             drop(modules_loaded);
+            debug!("loading module {}", module_name);
             let module = self.modules.get(module_name);
             if module.is_none() {
                 return Ok(false);
