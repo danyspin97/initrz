@@ -1,13 +1,18 @@
 mod config;
 mod depend;
 mod initramfs;
-mod module;
-mod modules;
+mod initramfs_modules;
+mod initramfs_type;
 mod newc;
 
-use std::{ffi::OsString, fs::File, io::Write, path::Path};
+use std::{
+    ffi::OsString,
+    fs::{self, File},
+    io::Write,
+    path::Path,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Clap;
 use log;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
@@ -15,6 +20,7 @@ use zstd::stream::write::Encoder;
 
 use config::Config;
 use initramfs::Initramfs;
+use initramfs_type::InitramfsType;
 
 #[derive(Clap)]
 #[clap(version = "0.1", author = "danyspin97")]
@@ -56,17 +62,25 @@ fn main() -> Result<()> {
         ColorChoice::Auto,
     )?;
 
-    let config = Config::new(&Path::new(&opts.config))?;
-
-    let initramfs = if opts.host {
-        Initramfs::with_host_settings(&opts.kver, config)?
-    } else {
-        Initramfs::new(&opts.kver, config)?
-    };
-    let initramfs_file = File::create("initramfs.img")?;
-    let mut zstd_encoder = Encoder::new(initramfs_file, 3)?;
+    let mut zstd_encoder = Encoder::new(
+        File::create(&opts.output)
+            .with_context(|| format!("unable to create file {:?}", opts.output))?,
+        3,
+    )?;
     // zstd_encoder.multithread(1)?;
-    zstd_encoder.write_all(&initramfs.into_bytes()?)?;
+    zstd_encoder.write_all(
+        &Initramfs::new(
+            if opts.host {
+                InitramfsType::Host
+            } else {
+                InitramfsType::General
+            },
+            // Canonicalize path to avoid problems with dowser and filter
+            fs::canonicalize(Path::new("/lib/modules").join(&opts.kver))?,
+            Config::new(&Path::new(&opts.config))?,
+        )?
+        .into_bytes()?,
+    )?;
     zstd_encoder.finish()?;
 
     Ok(())

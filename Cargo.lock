@@ -238,6 +238,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "rayon",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -402,6 +411,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bstr",
+ "common",
  "dowser",
  "either",
  "glob",
@@ -417,6 +427,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "simplelog",
+ "xz2",
 ]
 
 [[package]]
@@ -558,6 +569,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap 3.0.0-beta.2",
+ "common",
  "dowser",
  "libc",
  "log",

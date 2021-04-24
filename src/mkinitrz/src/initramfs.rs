@@ -6,13 +6,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use log::debug;
 
 use crate::config::Config;
 use crate::depend;
-use crate::module::Module;
-use crate::modules;
+use crate::initramfs_modules;
+use crate::initramfs_type::InitramfsType;
 use crate::newc::{self, Archive, Entry, EntryBuilder};
 
 const ROOT_DIRECTORIES: [&str; 9] = [
@@ -46,30 +46,67 @@ pub struct Initramfs {
 }
 
 impl Initramfs {
-    pub fn new(kver: &str, config: Config) -> Result<Initramfs> {
-        let mut initramfs = Initramfs::new_common_structure(kver, &config)?;
-
-        let modules = modules::get_general_modules(kver, config.modules)?;
-        initramfs.add_modules(kver, modules)?;
-
+    pub fn new(initramfs_type: InitramfsType, kroot: PathBuf, config: Config) -> Result<Initramfs> {
+        let mut initramfs = Initramfs::new_basic_structure()?;
+        initramfs.init(initramfs_type, kroot, config)?;
         Ok(initramfs)
     }
 
-    pub fn with_host_settings(kver: &str, config: Config) -> Result<Initramfs> {
-        let mut initramfs = Initramfs::new_common_structure(kver, &config)?;
+    fn init(
+        &mut self,
+        initramfs_type: InitramfsType,
+        kroot: PathBuf,
+        config: Config,
+    ) -> Result<()> {
+        let mut initrz: PathBuf =
+            Path::new(&env::var("INITRZ").unwrap_or("target/release/initrz".to_string())).into();
+        if !initrz.exists() {
+            initrz = Path::new("/sbin/initrz").into();
+            if !initrz.exists() {
+                bail!("unable to find initrz executable. Please set INITRZ environment variable");
+            }
+        }
+        self.add_elf_with_path(&initrz, Path::new("/init"))?;
 
-        let crypttab = Path::new("/etc/crypttab.initramfs");
-        if crypttab.exists() {
-            initramfs.add_file(crypttab)?;
+        self.add_elf(Path::new("/sbin/vgchange"))?;
+        self.add_elf(Path::new("/sbin/vgmknodes"))?;
+
+        self.add_elf(Path::new("/bin/busybox"))?;
+
+        let ld_conf = Path::new("/etc/ld.so.conf");
+        self.add_entry(
+            ld_conf,
+            EntryBuilder::file(ld_conf, Vec::new())
+                .with_metadata(&fs::metadata(&ld_conf)?)
+                .build(),
+        );
+
+        self.add_file(&kroot.join("modules.dep"))?;
+        self.add_file(&kroot.join("modules.alias"))?;
+
+        self.apply_config(&config);
+
+        initramfs_modules::get_modules(&initramfs_type, &kroot, config.modules)?
+            .iter()
+            .try_for_each(|module| -> Result<()> {
+                self.add_file(&module)?;
+                Ok(())
+            })?;
+
+        match initramfs_type {
+            InitramfsType::Host => {
+                let crypttab = Path::new("/etc/crypttab.initramfs");
+                if crypttab.exists() {
+                    self.add_file(crypttab)?;
+                }
+            }
+            InitramfsType::General => {}
         }
 
-        let modules = modules::get_host_modules(kver, config.modules)?;
-        initramfs.add_modules(kver, modules)?;
-
-        Ok(initramfs)
+        Ok(())
     }
 
-    fn new_common_structure(kver: &str, config: &Config) -> Result<Initramfs> {
+    fn new_basic_structure() -> Result<Initramfs> {
         let mut entries = Vec::new();
         let mut files: HashSet<PathBuf> = HashSet::new();
 
@@ -87,35 +124,7 @@ impl Initramfs {
             )
         });
 
-        let mut initramfs = Initramfs { entries, files };
-
-        let mut initrz: PathBuf =
-            Path::new(&env::var("INITRZ").unwrap_or("target/release/initrz".to_string())).into();
-        if !initrz.exists() {
-            initrz = Path::new("/sbin/initrz").into();
-        }
-        initramfs.add_elf_with_path(&initrz, Path::new("/init"))?;
-
-        initramfs.add_elf(Path::new("/sbin/vgchange"))?;
-        initramfs.add_elf(Path::new("/sbin/vgmknodes"))?;
-
-        initramfs.add_elf(Path::new("/bin/busybox"))?;
-
-        let ld_conf = Path::new("/etc/ld.so.conf");
-        initramfs.add_entry(
-            ld_conf,
-            EntryBuilder::file(ld_conf, Vec::new())
-                .with_metadata(&fs::metadata(&ld_conf)?)
-                .build(),
-        );
-
-        let kernel_root = Path::new("/lib/modules").join(kver);
-        initramfs.add_file(&kernel_root.join("modules.dep"))?;
-        initramfs.add_file(&kernel_root.join("modules.alias"))?;
-
-        initramfs.apply_config(config);
-
-        Ok(initramfs)
+        Ok(Initramfs { entries, files })
     }
 
     fn apply_config(&mut self, config: &Config) {}
@@ -164,9 +173,15 @@ impl Initramfs {
         );
         self.add_entry(
             &path,
-            EntryBuilder::file(&path, fs::read(&file)?)
-                .with_metadata(&fs::metadata(file)?)
-                .build(),
+            EntryBuilder::file(
+                &path,
+                fs::read(&file).with_context(|| format!("unable to read from file {:?}", file))?,
+            )
+            .with_metadata(
+                &fs::metadata(&file)
+                    .with_context(|| format!("unable to read metadata of file {:?}", file))?,
+            )
+            .build(),
         );
         Ok(true)
     }
@@ -189,19 +204,6 @@ impl Initramfs {
         debug!("Added entry {:?}", path);
         self.files.insert(path.into());
         self.entries.push(entry);
-    }
-
-    fn add_modules(&mut self, kver: &str, modules: Vec<Module>) -> Result<()> {
-        Ok(modules.iter().try_for_each(|module| -> Result<()> {
-            let path = &module.path.with_extension("");
-            self.add_directory(path.parent().unwrap());
-            Ok(self.add_entry(
-                &path,
-                EntryBuilder::file(&path, module.into_bytes()?)
-                    .with_metadata(&fs::metadata(&module.path)?)
-                    .build(),
-            ))
-        })?)
     }
 
     pub fn into_bytes(self) -> Result<Vec<u8>> {
