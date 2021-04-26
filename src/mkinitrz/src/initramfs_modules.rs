@@ -98,19 +98,6 @@ fn get_module_name(filename: &Path) -> Result<String> {
         })?
         .to_string())
 }
-fn is_module(p: &Path) -> bool {
-    p.extension()
-        .filter(|ext| ext.to_str().unwrap_or("") == "xz")
-        .is_some()
-        && p.file_stem()
-            .filter(|stem| {
-                Path::new(stem)
-                    .extension()
-                    .filter(|ext| ext.to_str().unwrap_or("") == "ko")
-                    .is_some()
-            })
-            .is_some()
-}
 
 fn get_all_modules(kroot: &Path) -> Result<Vec<(String, PathBuf)>> {
     BufReader::new(
