@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use bstr::ByteSlice;
-use libc::MSG_DONTWAIT;
-use log::{trace, warn};
+use log::warn;
 use netlink_sys::{protocols::NETLINK_KOBJECT_UEVENT, Socket, SocketAddr};
 
 use std::collections::HashMap;

@@ -1,8 +1,6 @@
 use std::{
     collections::HashSet,
-    convert::TryInto,
     env, fs,
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -13,7 +11,7 @@ use crate::config::Config;
 use crate::depend;
 use crate::initramfs_modules;
 use crate::initramfs_type::InitramfsType;
-use crate::newc::{self, Archive, Entry, EntryBuilder};
+use crate::newc::{Archive, Entry, EntryBuilder};
 
 const ROOT_DIRECTORIES: [&str; 9] = [
     "/dev",

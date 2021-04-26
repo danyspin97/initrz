@@ -1,17 +1,14 @@
 use anyhow::{bail, Context, Result};
-use dowser::Dowser;
 use glob::{glob, Pattern};
 use log::{debug, warn};
-use nix::kmod::{init_module, ModuleInitFlags};
+use nix::kmod::init_module;
 use xz2::bufread::XzDecoder;
 
 use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::mem::drop;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 

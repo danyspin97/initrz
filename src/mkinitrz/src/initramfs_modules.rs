@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    convert::TryFrom,
     fs::File,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},

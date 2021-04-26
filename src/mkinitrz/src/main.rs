@@ -14,7 +14,6 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Clap;
-use log;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
 use zstd::stream::write::Encoder;
 
