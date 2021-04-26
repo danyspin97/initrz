@@ -36,7 +36,6 @@ const ROOT_SYMLINKS: [(&str, &str); 6] = [
 
 const DEFAULT_DIR_MODE: u32 = 0o040_000 + 0o755;
 const DEFAULT_SYMLINK_MODE: u32 = 0o120_000;
-const DEFAULT_FILE_MODE: u32 = 0o644;
 
 pub struct Initramfs {
     entries: Vec<Entry>,
