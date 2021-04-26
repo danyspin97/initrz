@@ -7,24 +7,20 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use dowser::Dowser;
-use log::warn;
 use rayon::prelude::*;
 
 use crate::initramfs_type::InitramfsType;
-use common::Modules;
 
-fn is_module_needed(path: &Path, filename: &str) -> bool {
+fn is_module_needed(name: &str, path: &Path) -> bool {
+    let path = path
+        .strip_prefix("kernel/")
+        .expect("expected filename starting with 'kernel', malformed modules.dep");
     let path_str = path.as_os_str().to_str().unwrap();
-    warn!("{}", path_str);
     // https://github.com/distr1/distri/blob/master/cmd/distri/initrd.go#L45
     if path.starts_with("fs") && !path.starts_with("fs/nls") {
         return true; // file systems
     }
-    if path.starts_with("crypto")
-        || filename == "dm-crypt.ko.xz"
-        || filename == "dm-integrity.ko.xz"
-    {
+    if path.starts_with("crypto") || name == "dm-crypt" || name == "dm-integrity" {
         return true; // disk encryption
     }
     if path.starts_with("drivers/md/") || path.starts_with("lib/") {
@@ -64,36 +60,29 @@ pub fn get_modules(
     kroot: &Path,
     additional_modules: Vec<String>,
 ) -> Result<Vec<PathBuf>> {
-    let modules_root = kroot.join("kernel/");
     let additional_modules = additional_modules.into_iter().collect::<HashSet<String>>();
-    let host_modules = match initramfs_type {
-        InitramfsType::General => HashSet::new(),
-        InitramfsType::Host => get_host_modules()?.into_iter().collect::<HashSet<String>>(),
-    };
-    Ok(Vec::<PathBuf>::try_from(
-        Dowser::filtered(move |p: &Path| {
-            if !is_module(p) {
-                return false;
-            }
-            let path = p.strip_prefix(&modules_root);
-            if path.is_err() {
-                return false;
-            }
-            let path = path.unwrap();
-            let filename = path.file_name().unwrap().to_str().unwrap();
-            let module_name = get_module_name(path).unwrap_or("".to_string());
-            warn!("{}", module_name);
-            (is_module_needed(path, filename)
-                && match initramfs_type {
-                    InitramfsType::General => true,
-                    InitramfsType::Host => host_modules.contains(&module_name),
+    let modules = get_all_modules(kroot)?;
+
+    Ok(match initramfs_type {
+        InitramfsType::General => modules
+            .par_iter()
+            .filter(|(name, path)| {
+                is_module_needed(name, path) || additional_modules.contains(name)
+            })
+            .map(|(_, path)| kroot.join(path))
+            .collect::<Vec<PathBuf>>(),
+        InitramfsType::Host => {
+            let host_modules = get_host_modules()?.into_iter().collect::<HashSet<String>>();
+            modules
+                .par_iter()
+                .filter(|(name, path)| {
+                    (host_modules.contains(name) && is_module_needed(name, path))
+                        || additional_modules.contains(name)
                 })
-                || additional_modules.contains(&module_name)
-        })
-        .with_path(kroot.join("kernel")),
-    )?
-    .into_iter()
-    .collect::<Vec<PathBuf>>())
+                .map(|(_, path)| kroot.join(path))
+                .collect::<Vec<PathBuf>>()
+        }
+    })
 }
 
 fn get_module_name(filename: &Path) -> Result<String> {
@@ -122,6 +111,23 @@ fn is_module(p: &Path) -> bool {
                     .is_some()
             })
             .is_some()
+}
+
+fn get_all_modules(kroot: &Path) -> Result<Vec<(String, PathBuf)>> {
+    BufReader::new(
+        File::open(kroot.join("modules.dep")).with_context(|| "unable to open modules.dep")?,
+    )
+    .lines()
+    .filter_map(|line| line.ok())
+    .map(|line| -> Result<(String, PathBuf)> {
+        let module_path = Path::new(
+            line.split(':')
+                .next()
+                .with_context(|| "unable to get module from modules.dep")?,
+        );
+        Ok((get_module_name(module_path)?, module_path.to_path_buf()))
+    })
+    .collect()
 }
 
 fn get_host_modules() -> Result<Vec<String>> {
