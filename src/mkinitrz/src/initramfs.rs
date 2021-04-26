@@ -86,7 +86,7 @@ impl Initramfs {
 
         self.apply_config(&config);
 
-        initramfs_modules::get_modules(&initramfs_type, &kroot, config.modules)?
+        initramfs_modules::get_modules(initramfs_type.clone(), &kroot, config.modules)?
             .iter()
             .try_for_each(|module| -> Result<()> {
                 self.add_file(&module)?;

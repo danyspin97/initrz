@@ -14,7 +14,7 @@ use rayon::prelude::*;
 use crate::initramfs_type::InitramfsType;
 use common::Modules;
 
-fn is_general_module(path: &Path, filename: &str) -> bool {
+fn is_module_needed(path: &Path, filename: &str) -> bool {
     let path_str = path.as_os_str().to_str().unwrap();
     warn!("{}", path_str);
     // https://github.com/distr1/distri/blob/master/cmd/distri/initrd.go#L45
@@ -59,54 +59,17 @@ fn is_general_module(path: &Path, filename: &str) -> bool {
     false
 }
 
-fn insert_module<'a>(
-    module_name: &'a str,
-    modules: &'a Modules,
-    modules_added: &mut HashSet<&'a str>,
-) {
-    let module = modules.get(module_name).unwrap();
-    modules_added.insert(module_name);
-    module
-        .deps
-        .iter()
-        .for_each(|dep| insert_module(dep, modules, modules_added))
-}
-
 pub fn get_modules(
-    initramfs_type: &InitramfsType,
+    initramfs_type: InitramfsType,
     kroot: &Path,
     additional_modules: Vec<String>,
 ) -> Result<Vec<PathBuf>> {
-    let modules = Modules::new(&kroot)?;
-    let mut modules_to_add = match initramfs_type {
-        InitramfsType::General => {
-            let mut modules_added: HashSet<&str> = HashSet::new();
-            let general_modules = get_general_modules(kroot)?;
-            // Add dependencies for each module
-            general_modules
-                .iter()
-                .for_each(|module| insert_module(module, &modules, &mut modules_added));
-            general_modules
-        }
-        // We assume dependencies are already loaded when considering host modules
-        InitramfsType::Host => get_host_modules()?,
-    };
-    // Do not mind about replicated modules, Initramfs will handle those
-    modules_to_add.extend(additional_modules);
-    Ok(modules_to_add
-        .par_iter()
-        .filter_map(|module_name| {
-            if let Some(module) = modules.get(module_name) {
-                Some(kroot.join(&module.filename))
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<PathBuf>>())
-}
-
-fn get_general_modules(kroot: &Path) -> Result<Vec<String>> {
     let modules_root = kroot.join("kernel/");
+    let additional_modules = additional_modules.into_iter().collect::<HashSet<String>>();
+    let host_modules = match initramfs_type {
+        InitramfsType::General => HashSet::new(),
+        InitramfsType::Host => get_host_modules()?.into_iter().collect::<HashSet<String>>(),
+    };
     Ok(Vec::<PathBuf>::try_from(
         Dowser::filtered(move |p: &Path| {
             if !is_module(p) {
@@ -118,19 +81,25 @@ fn get_general_modules(kroot: &Path) -> Result<Vec<String>> {
             }
             let path = path.unwrap();
             let filename = path.file_name().unwrap().to_str().unwrap();
-            is_general_module(path, filename)
+            let module_name = get_module_name(path).unwrap_or("".to_string());
+            warn!("{}", module_name);
+            (is_module_needed(path, filename)
+                && match initramfs_type {
+                    InitramfsType::General => true,
+                    InitramfsType::Host => host_modules.contains(&module_name),
+                })
+                || additional_modules.contains(&module_name)
         })
         .with_path(kroot.join("kernel")),
     )?
-    .iter()
-    .map(|path| get_module_name(path))
-    .collect::<Result<Vec<_>>>()?)
+    .into_iter()
+    .collect::<Vec<PathBuf>>())
 }
 
-fn get_module_name(filename: &PathBuf) -> Result<String> {
+fn get_module_name(filename: &Path) -> Result<String> {
     Ok(filename
         .file_stem()
-        .and_then(|module| std::path::Path::new(module).file_stem())
+        .and_then(|module| Path::new(module).file_stem())
         .with_context(|| format!("failed to get module name of file {:?}", filename))?
         .to_str()
         .with_context(|| {
@@ -141,7 +110,6 @@ fn get_module_name(filename: &PathBuf) -> Result<String> {
         })?
         .to_string())
 }
-
 fn is_module(p: &Path) -> bool {
     p.extension()
         .filter(|ext| ext.to_str().unwrap_or("") == "xz")
