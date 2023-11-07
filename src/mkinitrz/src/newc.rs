@@ -194,7 +194,7 @@ impl Entry {
         write!(buf, "{:08x}", self.gid)?; // gid is always 0 (root)
         write!(buf, "{:08x}", self.nlink)?;
         write!(buf, "{:08x}", self.mtime)?;
-        write!(buf, "{:08x}", file_size as usize)?;
+        write!(buf, "{:08x}", file_size)?;
         write!(buf, "{:08x}", self.dev_major)?; // dev_major is always 0
         write!(buf, "{:08x}", self.dev_minor)?; // dev_minor is always 0
         write!(buf, "{:08x}", self.rdev_major)?;
@@ -241,6 +241,7 @@ impl EntryBuilder {
     }
 
     /// Create an entry representing a special file
+    #[allow(dead_code)]
     pub fn special_file<T>(name: T) -> Self
     where
         T: Into<EntryName>,
@@ -343,7 +344,7 @@ mod tests {
         let mut buf = Vec::new();
         entry.write(&mut buf)?;
 
-        assert!(buf.len() > 0);
+        assert!(!buf.is_empty());
 
         Ok(())
     }

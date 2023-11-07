@@ -2,13 +2,14 @@
 
 use anyhow::{bail, Result};
 use log::error;
-use object::elf::PT_DYNAMIC;
-use object::elf::{FileHeader32, FileHeader64};
-use object::elf::{DT_NEEDED, DT_STRSZ, DT_STRTAB};
-use object::pod::Bytes;
-use object::read::elf::{Dyn, FileHeader, ProgramHeader};
-use object::read::FileKind;
-use object::{Endianness, StringTable};
+use object::{
+    elf::{FileHeader32, FileHeader64, DT_NEEDED, DT_STRSZ, DT_STRTAB, PT_DYNAMIC},
+    read::{
+        elf::{Dyn, FileHeader, ProgramHeader},
+        FileKind,
+    },
+    Endianness, StringTable,
+};
 use std::convert::TryInto;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs;
@@ -19,17 +20,16 @@ use std::path::{Path, PathBuf};
 pub fn resolve(path: &Path) -> Result<Vec<PathBuf>> {
     let data = fs::read(path)?;
 
-    let kind = FileKind::parse(&data)?;
-    let bytes = Bytes(&data);
+    let kind = FileKind::parse(&*data)?;
 
     let needed = match kind {
         FileKind::Elf32 => {
-            let elf = FileHeader32::<Endianness>::parse(bytes)?;
-            elf_needed(elf, bytes)
+            let elf = FileHeader32::<Endianness>::parse(&*data)?;
+            elf_needed(elf, &data)
         }
         FileKind::Elf64 => {
-            let elf = FileHeader64::<Endianness>::parse(bytes)?;
-            elf_needed(elf, bytes)
+            let elf = FileHeader64::<Endianness>::parse(&*data)?;
+            elf_needed(elf, &data)
         }
         _ => {
             error!("Failed to parse binary");
@@ -46,7 +46,7 @@ pub fn resolve(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(resolved)
 }
 
-fn elf_needed<T>(elf: &T, data: Bytes) -> Result<Vec<OsString>>
+fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<OsString>>
 where
     T: FileHeader<Endian = Endianness>,
 {
@@ -80,7 +80,7 @@ where
 
     for header in headers {
         if let Ok(Some(data)) = header.data_range(endian, data, strtab, strsz) {
-            let dynstr = StringTable::new(data);
+            let dynstr = StringTable::new(data, strtab, strsz);
 
             for offset in offsets {
                 let offset = offset.try_into()?;
@@ -162,6 +162,7 @@ fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<PathBuf>) -> Result<()> {
 
 /// C struct used in `dlinfo` with `RTLD_DI_LINKMAP`
 #[repr(C)]
+#[allow(non_camel_case_types)]
 struct link_map {
     l_addr: u64,
     l_name: *mut libc::c_char,

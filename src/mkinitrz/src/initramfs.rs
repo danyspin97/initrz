@@ -74,7 +74,7 @@ impl Initramfs {
         self.add_entry(
             ld_conf,
             EntryBuilder::file(ld_conf, Vec::new())
-                .with_metadata(&fs::metadata(&ld_conf)?)
+                .with_metadata(&fs::metadata(ld_conf)?)
                 .build(),
         );
 
@@ -86,7 +86,7 @@ impl Initramfs {
         initramfs_modules::get_modules(initramfs_type.clone(), &kroot, config.modules)?
             .iter()
             .try_for_each(|module| -> Result<()> {
-                self.add_file(&module)?;
+                self.add_file(module)?;
                 Ok(())
             })?;
 
@@ -124,7 +124,7 @@ impl Initramfs {
         Ok(Initramfs { entries, files })
     }
 
-    fn apply_config(&mut self, config: &Config) {}
+    fn apply_config(&mut self, _config: &Config) {}
 
     fn add_elf(&mut self, exe: &Path) -> Result<()> {
         self.add_elf_with_path(exe, exe)
@@ -192,8 +192,8 @@ impl Initramfs {
         }
 
         self.add_entry(
-            &dir,
-            EntryBuilder::directory(&dir).mode(DEFAULT_DIR_MODE).build(),
+            dir,
+            EntryBuilder::directory(dir).mode(DEFAULT_DIR_MODE).build(),
         );
     }
 

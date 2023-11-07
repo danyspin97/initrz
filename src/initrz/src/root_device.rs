@@ -11,7 +11,7 @@ pub struct RootDevice {
     pub devpath: Option<String>,
 }
 
-pub fn get_root_from_cmdline(cmdline: &Vec<String>) -> Result<RootDevice> {
+pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     let auto_type = String::from("root.type=auto");
 
     let identifier = cmdline
@@ -32,7 +32,7 @@ pub fn get_root_from_cmdline(cmdline: &Vec<String>) -> Result<RootDevice> {
             .iter()
             .filter(|arg| arg.starts_with("root.type="))
             .last()
-            .or_else(|| Some(&auto_type))
+            .or(Some(&auto_type))
             .map(|root| root.strip_prefix("root.type="))
             .unwrap()
             .unwrap()

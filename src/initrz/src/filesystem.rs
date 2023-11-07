@@ -1,4 +1,4 @@
-use std::convert::TryFrom;
+use std::{convert::TryFrom, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -26,13 +26,9 @@ impl Filesystem {
     pub fn get_filesystem_string(&self, path: &str) -> Result<String> {
         Ok(match self {
             Filesystem::Ext4 => String::from("ext4"),
-            Filesystem::Auto => String::from(
-                get_blkid_cache()
-                    .get_tag_value("TYPE", path)
-                    .with_context(|| {
-                        format!("unable to get filesystem type for device {:?}", path)
-                    })?,
-            ),
+            Filesystem::Auto => get_blkid_cache()
+                .get_tag_value("TYPE", &PathBuf::from(path))
+                .with_context(|| format!("unable to get filesystem type for device {:?}", path))?,
         })
     }
 }

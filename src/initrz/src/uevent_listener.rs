@@ -26,7 +26,7 @@ pub struct UeventListener {
 impl UeventListener {
     pub fn init(module_loader: Arc<ModuleLoader>) -> Result<UeventListener> {
         let mut socket = Socket::new(NETLINK_KOBJECT_UEVENT)
-            .with_context(|| format!("unable to create socket"))?;
+            .with_context(|| "unable to create socket".to_string())?;
         // socket
         //     .set_non_blocking(true)
         //     .with_context(|| format!("unable to set O_NONBLOCK to socket"))?;
@@ -36,7 +36,7 @@ impl UeventListener {
         //     .with_context(|| format!("unable to connect to kernel address"))?;
         socket
             .bind(&kernel_addr)
-            .with_context(|| format!("unable to bind socket"))?;
+            .with_context(|| "unable to bind socket".to_string())?;
 
         Ok(UeventListener {
             socket,
@@ -65,13 +65,15 @@ impl UeventListener {
 
             let uevent = uevent.unwrap();
             let res = self.get_device_path(uevent);
-            if res.is_err() {
-                warn!("uevent: {:?}", res);
-            } else if let Some(path) = res.unwrap() {
-                if let Err(err) = device_tx.send(path) {
-                    warn!("send error: {:?}", err);
-                    break;
+            if let Ok(path) = res {
+                if let Some(path) = path {
+                    if let Err(err) = device_tx.send(path) {
+                        warn!("send error: {:?}", err);
+                        break;
+                    }
                 }
+            } else {
+                warn!("uevent: {:?}", res);
             }
         }
     }
@@ -143,13 +145,12 @@ pub fn parse_uevent(buf: &[u8]) -> Result<Uevent> {
 
     let name = lines
         .next()
-        .with_context(|| format!("uncorrect uevent received"))?;
+        .with_context(|| "uncorrect uevent received".to_string())?;
     name.find_char('@')
-        .with_context(|| format!("uncorrect uevent received"))?;
+        .with_context(|| "uncorrect uevent received".to_string())?;
 
     let vars: HashMap<_, _> = lines
-        .into_iter()
-        .map(|line| parse_line(line))
+        .map(parse_line)
         .filter_map(|res| {
             if res.is_err() {
                 warn!("unable to process line\n{:?}", res);

@@ -12,17 +12,15 @@ mod utils;
 
 use anyhow::{bail, Context, Result};
 use dowser::Dowser;
-use libc;
 use log::{error, info};
 use nix::unistd::chroot;
 use rayon::prelude::*;
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
 use std::{
-    convert::TryFrom,
     env, fs,
     os::unix::process::CommandExt,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::{mpsc::channel, Arc},
     thread,
@@ -112,17 +110,16 @@ fn initrz() -> Result<()> {
     thread::spawn(move || uevent_listener.listen(tx));
 
     info!("traversing /sys modalias files");
-    Vec::<PathBuf>::try_from(
-        Dowser::filtered(|p: &Path| {
+    Dowser::default()
+        .with_path("/sys")
+        .into_vec_filtered(|p: &Path| {
             p.file_name()
                 .filter(|filename| filename.to_str().unwrap_or("") == "modalias")
                 .is_some()
         })
-        .with_path("/sys"),
-    )?
-    .par_iter()
-    .filter_map(|modalias| modalias.to_str())
-    .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
+        .par_iter()
+        .filter_map(|modalias| modalias.to_str())
+        .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
 
     info!("receiving unlock results");
     device_handler.listen(rx)?;

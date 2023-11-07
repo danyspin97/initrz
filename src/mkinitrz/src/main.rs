@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use clap::Clap;
+use clap::Parser;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
 use zstd::stream::write::Encoder;
 
@@ -21,7 +21,7 @@ use config::Config;
 use initramfs::Initramfs;
 use initramfs_type::InitramfsType;
 
-#[derive(Clap)]
+#[derive(Parser)]
 #[clap(version = "0.1", author = "danyspin97")]
 struct Opts {
     #[clap(
@@ -38,7 +38,8 @@ struct Opts {
     output: OsString,
     #[clap(short = 'q', long = "quiet")]
     quiet: bool,
-    #[clap(short = 'v', long = "verbose", parse(from_occurrences))]
+    // TODO: Use from_occurences
+    #[clap(short = 'v', long = "verbose")]
     verbose: u32,
 }
 
@@ -76,7 +77,7 @@ fn main() -> Result<()> {
             },
             // Canonicalize path to avoid problems with dowser and filter
             fs::canonicalize(Path::new("/lib/modules").join(&opts.kver))?,
-            Config::new(&Path::new(&opts.config))?,
+            Config::new(Path::new(&opts.config))?,
         )?
         .into_bytes()?,
     )?;

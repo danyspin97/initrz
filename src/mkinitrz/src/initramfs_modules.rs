@@ -104,7 +104,7 @@ fn get_all_modules(kroot: &Path) -> Result<Vec<(String, PathBuf)>> {
         File::open(kroot.join("modules.dep")).with_context(|| "unable to open modules.dep")?,
     )
     .lines()
-    .filter_map(|line| line.ok())
+    .map_while(Result::ok)
     .map(|line| -> Result<(String, PathBuf)> {
         let module_path = Path::new(
             line.split(':')
@@ -121,11 +121,11 @@ fn get_host_modules() -> Result<Vec<String>> {
         File::open("/proc/modules").with_context(|| "unable to open file /proc/modules")?,
     )
     .lines()
-    .filter_map(|line| line.ok())
+    .map_while(Result::ok)
     .filter_map(|line| {
         line.split_whitespace()
             .next()
-            .and_then(|module| Some(module.to_string()))
+            .map(|module| module.to_string())
     })
     .collect())
 }

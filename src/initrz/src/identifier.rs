@@ -15,8 +15,8 @@ pub enum Identifier {
 
 impl From<&str> for Identifier {
     fn from(identifier: &str) -> Identifier {
-        if identifier.starts_with("UUID=") {
-            Identifier::Uuid(identifier[5..].to_string())
+        if let Some(stripped) = identifier.strip_prefix("UUID=") {
+            Identifier::Uuid(stripped.to_string())
         } else {
             Identifier::Path(identifier.to_string())
         }
@@ -35,9 +35,7 @@ impl fmt::Display for Identifier {
 impl Identifier {
     pub fn get_path(&self) -> Result<String> {
         Ok(match self {
-            Identifier::Uuid(uuid) => {
-                String::from(get_blkid_cache().get_devname(Right((&UUID_TAG, &uuid)))?)
-            }
+            Identifier::Uuid(uuid) => get_blkid_cache().get_devname(Right((&UUID_TAG, &uuid)))?,
             Identifier::Path(path) => {
                 if Path::new(path).exists() {
                     bail!("unable to find device in path {:?}", path);

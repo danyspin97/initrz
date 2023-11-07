@@ -77,13 +77,13 @@ impl Mounts {
         self.mountpoints
             .iter()
             .try_for_each(|(name, mount)| -> Result<()> {
-                Ok(mount
+                mount
                     .move_mount(
                         new_root_dir.as_raw_fd(),
                         name.as_str(),
                         MoveMountFlags::empty(),
                     )
-                    .with_context(|| "unable to move root device into /")?)
+                    .with_context(|| "unable to move root device into /")
             })?;
 
         env::set_current_dir("/new_root")?;

@@ -7,20 +7,20 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0"
-clap = { git = "https://github.com/clap-rs/clap/" }
-dowser = "0.2"
-libc = "0.2"
-log = "0.4"
-rayon = "1.5"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.8.17"
-simplelog = "0.10"
-xz2 = "0.1"
-zstd = "0.7"
+anyhow = "1.0.75"
+clap = { version = "4.4.7", features = ["derive", "wrap_help"]}
+dowser = "0.8.1"
+libc = "0.2.150"
+log = "0.4.20"
+rayon = "1.8.0"
+serde = { version = "1.0.192", features = ["derive"] }
+serde_yaml = "0.9.27"
+simplelog = "0.12.1"
+xz2 = "0.1.7"
+zstd = "0.13.0"
 
 [dependencies.object]
-version = "0.23.0"
+version = "0.32.1"
 default-features = false
 features = ["elf", "read_core", "std"]
 

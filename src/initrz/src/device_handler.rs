@@ -1,11 +1,13 @@
 extern crate rpassword;
 
 use anyhow::{bail, Context, Result};
-use libcryptsetup_rs::{CryptActivateFlags, CryptInit, CryptKeyfileFlags, EncryptionFormat};
+use libcryptsetup_rs::consts::flags::{CryptActivate, CryptKeyfile};
+use libcryptsetup_rs::consts::vals::EncryptionFormat;
+use libcryptsetup_rs::CryptInit;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::Receiver;
 
@@ -24,7 +26,7 @@ pub struct DeviceHandler {
 }
 
 impl DeviceHandler {
-    pub fn init(crypttab_path: &str, cmdline: &Vec<String>) -> Result<DeviceHandler> {
+    pub fn init(crypttab_path: &str, cmdline: &[String]) -> Result<DeviceHandler> {
         let encrypted_devices = match Path::new(crypttab_path).exists() {
             true => parse_crypttab(crypttab_path)?,
             false => Vec::new(),
@@ -41,10 +43,9 @@ impl DeviceHandler {
     pub fn listen(&mut self, device_rx: Receiver<String>) -> Result<()> {
         loop {
             let received = device_rx.try_recv();
-            if received.is_err() {
-                match received.unwrap_err() {
-                    std::sync::mpsc::TryRecvError::Disconnected => break,
-                    _ => {}
+            if let Err(err) = received {
+                if err == std::sync::mpsc::TryRecvError::Disconnected {
+                    break;
                 }
                 break;
             }
@@ -57,7 +58,9 @@ impl DeviceHandler {
 
     fn get_encrypted_device(&self, path: &str) -> Option<&EncryptedDevice> {
         let blkid_cache = get_blkid_cache();
-        let uuid = blkid_cache.get_tag_value("UUID", path).unwrap_or(&"");
+        let uuid = blkid_cache
+            .get_tag_value("UUID", &PathBuf::from(path))
+            .unwrap_or_default();
         self.encrypted_devices
             .iter()
             .find(|d| match &d.identifier {
@@ -67,7 +70,7 @@ impl DeviceHandler {
             .or_else(|| {
                 self.encrypted_devices.iter().find(|d| match &d.identifier {
                     Identifier::Path(_) => false,
-                    Identifier::Uuid(saved_uuid) => saved_uuid == uuid,
+                    Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
                 })
             })
     }
@@ -95,11 +98,10 @@ impl DeviceHandler {
             if match root_identifier {
                 Identifier::Uuid(uuid) => device
                     .tag_iter()
-                    .find(|tag| tag == &(String::from(UUID_TAG), String::from(uuid)))
-                    .is_some(),
-                Identifier::Path(path) => devname == path,
+                    .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
+                Identifier::Path(path) => devname.to_str().unwrap() == path,
             } {
-                self.root.devpath = Some(devname.to_string());
+                self.root.devpath = Some(devname.to_str().unwrap().to_string());
                 return Ok(true);
             }
         }
@@ -114,11 +116,10 @@ impl DeviceHandler {
                 if match &encrypted_device.identifier {
                     Identifier::Uuid(uuid) => device
                         .tag_iter()
-                        .find(|tag| tag == &(String::from(UUID_TAG), String::from(uuid)))
-                        .is_some(),
-                    Identifier::Path(path) => devname == path,
+                        .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
+                    Identifier::Path(path) => devname.to_str().unwrap() == path,
                 } {
-                    unlock_luks_device(devname, &encrypted_device)?;
+                    unlock_luks_device(devname.to_str().unwrap(), encrypted_device)?;
                 }
             }
         }
@@ -135,13 +136,13 @@ impl DeviceHandler {
     }
 
     pub fn handle(&mut self, path: &str) -> Result<()> {
-        if let Some(encrypted_device) = self.get_encrypted_device(&path) {
+        if let Some(encrypted_device) = self.get_encrypted_device(path) {
             // TODO: execute in another thread and save the result
-            self.unlock_device(&path, encrypted_device)?;
+            self.unlock_device(path, encrypted_device)?;
             return Ok(());
         }
 
-        if self.is_root(&path) {
+        if self.is_root(path) {
             self.root.devpath = Some(path.to_string());
             return Ok(());
         }
@@ -149,7 +150,7 @@ impl DeviceHandler {
         let mut blkid_cache = get_blkid_cache();
         blkid_cache.probe_all_new()?;
 
-        let filesystem = blkid_cache.get_tag_value("TYPE", &path);
+        let filesystem = blkid_cache.get_tag_value("TYPE", &PathBuf::from(path));
         if filesystem.is_err() {
             // We have got a block device with no filesystem, skip
             return Ok(());
@@ -191,19 +192,16 @@ fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<
 
     match &encrypted_device.unlock {
         UnlockType::Key(key) => {
-            device.keyfile_handle().device_read(
-                Path::new(key),
-                0,
-                None,
-                CryptKeyfileFlags::empty(),
-            )?;
+            device
+                .keyfile_handle()
+                .device_read(Path::new(key), 0, None, CryptKeyfile::empty())?;
         }
         UnlockType::AskPassphrase => {
             device.activate_handle().activate_by_passphrase(
                 Some(&encrypted_device.name),
                 None,
                 ask_passphrase_for_device(encrypted_device)?.as_bytes(),
-                CryptActivateFlags::empty(),
+                CryptActivate::empty(),
             )?;
         }
     };
@@ -217,8 +215,8 @@ fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>> {
     // TODO: Print errors
     Ok(BufReader::new(file)
         .lines()
-        .filter_map(|line| line.ok())
-        .filter(|line| !line.starts_with("#"))
+        .map_while(Result::ok)
+        .filter(|line| !line.starts_with('#'))
         .filter(|line| !line.is_empty())
         .map(EncryptedDevice::from_line)
         .filter_map(|device| device.ok())
@@ -226,8 +224,9 @@ fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>> {
 }
 
 fn ask_passphrase_for_device(encrypted_device: &EncryptedDevice) -> Result<String> {
-    Ok(rpassword::read_password_from_tty(Some(&format!(
+    rpassword::prompt_password(format!(
         "Password for device {}: ",
         encrypted_device.identifier
-    )))?)
+    ))
+    .context("unable to read password from stdin")
 }
