@@ -1,6 +1,6 @@
 [workspace]
 
 members = [
-    "src/initrz",
-    "src/mkinitrz",
+    "initrz",
+    "mkinitrz",
 ]

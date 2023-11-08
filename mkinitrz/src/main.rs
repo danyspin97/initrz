@@ -67,7 +67,6 @@ fn main() -> Result<()> {
             .with_context(|| format!("unable to create file {:?}", opts.output))?,
         3,
     )?;
-    // zstd_encoder.multithread(1)?;
     zstd_encoder.write_all(
         &Initramfs::new(
             if opts.host {
