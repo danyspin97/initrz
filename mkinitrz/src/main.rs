@@ -7,12 +7,12 @@ mod newc;
 
 use std::{
     fs::{self, File},
-    io::Write,
+    io::{BufWriter, Write},
     path::Path,
 };
 
 use anyhow::{ensure, Context, Result};
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use clap::Parser;
 use colored::Colorize;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
@@ -22,11 +22,29 @@ use config::Config;
 use initramfs::Initramfs;
 use initramfs_type::InitramfsType;
 
+#[derive(Clone, Copy, Debug)]
+enum Compression {
+    None,
+    Zstd,
+}
+
+impl clap::ValueEnum for Compression {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Compression::None, Compression::Zstd]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        match self {
+            Compression::None => Some(clap::builder::PossibleValue::new("none")),
+            Compression::Zstd => Some(clap::builder::PossibleValue::new("zstd")),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[clap(version = "0.1", author = "danyspin97")]
 struct Opts {
     #[clap(
-        short = 'c',
         long = "config",
         default_value = "/etc/initrz/mkinitrz.conf"
     )]
@@ -43,6 +61,8 @@ struct Opts {
     verbose: u8,
     #[clap(long, default_value = "/lib/modules")]
     kernel_modules_path: Utf8PathBuf,
+    #[clap(value_enum, short, long, default_value_t = Compression::None)]
+    compression: Compression,
 }
 
 fn main() -> Result<()> {
@@ -64,15 +84,12 @@ fn main() -> Result<()> {
         ColorChoice::Auto,
     )?;
 
-    let mut zstd_encoder = Encoder::new(
-        File::create(
-            opts.output
-                .clone()
-                .unwrap_or_else(|| format!("initramfs-{}.img", opts.kernel_version)),
-        )
-        .with_context(|| format!("unable to create file {:?}", opts.output))?,
-        3,
-    )?;
+    let file = File::create(
+        opts.output
+            .clone()
+            .unwrap_or_else(|| format!("initramfs-{}.img", opts.kernel_version)),
+    )
+    .with_context(|| format!("unable to create file {:?}", opts.output))?;
 
     ensure!(
         opts.kernel_modules_path.exists(),
@@ -106,22 +123,30 @@ fn main() -> Result<()> {
             .join(", ")
     );
 
-    zstd_encoder.write_all(
-        &Initramfs::new(
-            if opts.host {
-                InitramfsType::Host
-            } else {
-                InitramfsType::General
-            },
-            // Canonicalize path to avoid problems with dowser and filter
-            Utf8PathBuf::from_path_buf(fs::canonicalize(kernel_modules)?).map_err(|path| {
-                anyhow::anyhow!("unable to convert path {} to utf8", path.to_string_lossy())
-            })?,
-            Config::new(&opts.config)?,
-        )?
-        .into_bytes()?,
-    )?;
-    zstd_encoder.finish()?;
+    let initramfs = &Initramfs::new(
+        if opts.host {
+            InitramfsType::Host
+        } else {
+            InitramfsType::General
+        },
+        // Canonicalize path to avoid problems with dowser and filter
+        Utf8PathBuf::from_path_buf(fs::canonicalize(kernel_modules)?).map_err(|path| {
+            anyhow::anyhow!("unable to convert path {} to utf8", path.to_string_lossy())
+        })?,
+        Config::new(&opts.config)?,
+    )?
+    .into_bytes()?;
+
+    let mut writer = BufWriter::new(file);
+
+    match opts.compression {
+        Compression::None => writer.write_all(initramfs)?,
+        Compression::Zstd => {
+            let mut zstd_encoder = Encoder::new(writer, 3)?;
+            zstd_encoder.write_all(initramfs)?;
+            zstd_encoder.finish()?;
+        }
+    }
 
     Ok(())
 }
