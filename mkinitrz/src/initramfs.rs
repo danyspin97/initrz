@@ -135,7 +135,15 @@ impl Initramfs {
 
     fn add_library(&mut self, lib: &Utf8Path) -> Result<()> {
         let libname = lib.file_name().unwrap();
-        if !self.add_file_with_path(lib, &Utf8Path::new("/usr/lib").join(libname))? {
+        const PATHS: [&str; 3] = ["/usr/lib/", "/usr/lib64", "/usr/local/lib"];
+        let path = PATHS
+            .iter()
+            .find(|path| {
+                let path = Utf8Path::new(path);
+                path.join(libname).exists()
+            })
+            .with_context(|| format!("unable to find library {}", libname))?;
+        if !self.add_file_with_path(lib, Utf8Path::new(path))? {
             return Ok(());
         }
 
