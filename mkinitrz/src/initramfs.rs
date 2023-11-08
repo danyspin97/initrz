@@ -4,7 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
+use colored::Colorize;
 use log::debug;
 
 use crate::config::Config;
@@ -159,6 +160,11 @@ impl Initramfs {
     }
 
     fn add_file_with_path(&mut self, file: &Path, path: &Path) -> Result<bool> {
+        ensure!(
+            file.exists(),
+            "file {} does not exist",
+            file.to_string_lossy().red().bold()
+        );
         let file = fs::canonicalize(file)?;
         let path = path.to_path_buf();
         if self.files.contains(&path) {
