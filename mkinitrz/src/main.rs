@@ -12,8 +12,10 @@ use std::{
     path::Path,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
+use camino::Utf8Path;
 use clap::Parser;
+use colored::Colorize;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
 use zstd::stream::write::Encoder;
 
@@ -30,17 +32,16 @@ struct Opts {
         default_value = "/etc/initrz/mkinitrz.conf"
     )]
     config: OsString,
-    #[clap(short = 'h', long = "host-only")]
+    #[clap(long = "host-only")]
     host: bool,
     #[clap(short = 'k', long = "kver")]
-    kver: String,
+    kernel_version: String,
     #[clap(short = 'o', long = "output")]
-    output: OsString,
+    output: Option<String>,
     #[clap(short = 'q', long = "quiet")]
     quiet: bool,
-    // TODO: Use from_occurences
-    #[clap(short = 'v', long = "verbose")]
-    verbose: u32,
+    #[clap(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 fn main() -> Result<()> {
@@ -63,10 +64,37 @@ fn main() -> Result<()> {
     )?;
 
     let mut zstd_encoder = Encoder::new(
-        File::create(&opts.output)
-            .with_context(|| format!("unable to create file {:?}", opts.output))?,
+        File::create(
+            opts.output
+                .clone()
+                .unwrap_or_else(|| format!("initramfs-{}.img", opts.kernel_version)),
+        )
+        .with_context(|| format!("unable to create file {:?}", opts.output))?,
         3,
     )?;
+
+    let kernel_modules = Path::new("/lib/modules").join(&opts.kernel_version);
+    // ensure that the path kernel_modules exists. If not, show the user all available kernel
+    // versions
+    ensure!(
+        kernel_modules.exists(),
+        "kernel version {} not found. Available versions: {}",
+        opts.kernel_version.red(),
+        Utf8Path::new("/lib/modules")
+            .read_dir()?
+            .filter_map(|entry| {
+                entry.ok().and_then(|entry| {
+                    entry
+                        .file_name()
+                        .into_string()
+                        .ok()
+                        .map(|s| s.green().to_string())
+                })
+            })
+            .collect::<Vec<String>>()
+            .join(", ")
+    );
+
     zstd_encoder.write_all(
         &Initramfs::new(
             if opts.host {
@@ -75,7 +103,7 @@ fn main() -> Result<()> {
                 InitramfsType::General
             },
             // Canonicalize path to avoid problems with dowser and filter
-            fs::canonicalize(Path::new("/lib/modules").join(&opts.kver))?,
+            fs::canonicalize(kernel_modules)?,
             Config::new(Path::new(&opts.config))?,
         )?
         .into_bytes()?,
