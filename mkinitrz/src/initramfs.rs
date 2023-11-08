@@ -1,10 +1,9 @@
-use std::{
-    collections::HashSet,
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
+use std::{collections::HashSet, env, fs};
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
+use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use colored::Colorize;
 use log::debug;
 
@@ -40,73 +39,65 @@ const DEFAULT_SYMLINK_MODE: u32 = 0o120_000;
 
 pub struct Initramfs {
     entries: Vec<Entry>,
-    files: HashSet<PathBuf>,
+    files: HashSet<Utf8PathBuf>,
 }
 
 impl Initramfs {
-    pub fn new(initramfs_type: InitramfsType, kroot: PathBuf, config: Config) -> Result<Initramfs> {
-        let mut initramfs = Initramfs::new_basic_structure()?;
-        initramfs.init(initramfs_type, kroot, config)?;
-        Ok(initramfs)
-    }
-
-    fn init(
-        &mut self,
+    pub fn new(
         initramfs_type: InitramfsType,
-        kroot: PathBuf,
+        kroot: Utf8PathBuf,
         config: Config,
-    ) -> Result<()> {
-        let mut initrz: PathBuf =
-            Path::new(&env::var("INITRZ").unwrap_or("target/release/initrz".to_string())).into();
-        if !initrz.exists() {
-            initrz = Path::new("/sbin/initrz").into();
-            if !initrz.exists() {
-                bail!("unable to find initrz executable. Please set INITRZ environment variable");
-            }
-        }
-        self.add_elf_with_path(&initrz, Path::new("/init"))?;
+    ) -> Result<Initramfs> {
+        let mut initramfs = Initramfs::new_basic_structure()?;
+        let initrz =
+            Utf8PathBuf::from(&env::var("INITRZ").unwrap_or("target/release/initrz".to_string()));
+        ensure!(
+            initrz.exists(),
+            "unable to find initrz executable. Please set INITRZ environment variable"
+        );
+        initramfs.add_elf_with_path(&initrz, Utf8Path::new("/init"))?;
 
-        self.add_elf(Path::new("/sbin/vgchange"))?;
-        self.add_elf(Path::new("/sbin/vgmknodes"))?;
+        initramfs.add_elf(Utf8Path::new("/sbin/vgchange"))?;
+        initramfs.add_elf(Utf8Path::new("/sbin/vgmknodes"))?;
 
-        self.add_elf(Path::new("/bin/busybox"))?;
+        initramfs.add_elf(Utf8Path::new("/bin/busybox"))?;
 
-        let ld_conf = Path::new("/etc/ld.so.conf");
-        self.add_entry(
+        let ld_conf = Utf8Path::new("/etc/ld.so.conf");
+        initramfs.add_entry(
             ld_conf,
             EntryBuilder::file(ld_conf, Vec::new())
                 .with_metadata(&fs::metadata(ld_conf)?)
                 .build(),
         );
 
-        self.add_file(&kroot.join("modules.dep"))?;
-        self.add_file(&kroot.join("modules.alias"))?;
+        initramfs.add_file(&kroot.join("modules.dep"))?;
+        initramfs.add_file(&kroot.join("modules.alias"))?;
 
-        self.apply_config(&config);
+        initramfs.apply_config(&config);
 
         initramfs_modules::get_modules(initramfs_type.clone(), &kroot, config.modules)?
             .iter()
             .try_for_each(|module| -> Result<()> {
-                self.add_file(module)?;
+                initramfs.add_file(module)?;
                 Ok(())
             })?;
 
         match initramfs_type {
             InitramfsType::Host => {
-                let crypttab = Path::new("/etc/crypttab.initramfs");
+                let crypttab = Utf8Path::new("/etc/crypttab.initramfs");
                 if crypttab.exists() {
-                    self.add_file(crypttab)?;
+                    initramfs.add_file(crypttab)?;
                 }
             }
             InitramfsType::General => {}
         }
 
-        Ok(())
+        Ok(initramfs)
     }
 
     fn new_basic_structure() -> Result<Initramfs> {
         let mut entries = Vec::new();
-        let mut files: HashSet<PathBuf> = HashSet::new();
+        let mut files: HashSet<Utf8PathBuf> = HashSet::new();
 
         ROOT_DIRECTORIES.iter().for_each(|dir| {
             files.insert((*dir).into());
@@ -127,43 +118,43 @@ impl Initramfs {
 
     fn apply_config(&mut self, _config: &Config) {}
 
-    fn add_elf(&mut self, exe: &Path) -> Result<()> {
+    fn add_elf(&mut self, exe: &Utf8Path) -> Result<()> {
         self.add_elf_with_path(exe, exe)
     }
 
-    fn add_elf_with_path(&mut self, exe: &Path, path: &Path) -> Result<()> {
+    fn add_elf_with_path(&mut self, exe: &Utf8Path, path: &Utf8Path) -> Result<()> {
         if !self.add_file_with_path(exe, path)? {
             return Ok(());
         }
-        depend::resolve(Path::new(exe))?
+        depend::resolve(Utf8Path::new(exe))?
             .iter()
-            .try_for_each(|lib| -> Result<()> { self.add_library(lib) })?;
+            .try_for_each(|lib| self.add_library(lib))?;
 
         Ok(())
     }
 
-    fn add_library(&mut self, lib: &Path) -> Result<()> {
+    fn add_library(&mut self, lib: &Utf8Path) -> Result<()> {
         let libname = lib.file_name().unwrap();
-        if !self.add_file_with_path(lib, &Path::new("/usr/lib").join(libname))? {
+        if !self.add_file_with_path(lib, &Utf8Path::new("/usr/lib").join(libname))? {
             return Ok(());
         }
 
-        depend::resolve(lib)?
+        depend::resolve(Utf8Path::new(lib))?
             .iter()
-            .try_for_each(|lib| -> Result<()> { self.add_library(lib) })?;
+            .try_for_each(|lib| self.add_library(lib))?;
 
         Ok(())
     }
 
-    fn add_file(&mut self, path: &Path) -> Result<bool> {
+    fn add_file(&mut self, path: &Utf8Path) -> Result<bool> {
         self.add_file_with_path(path, path)
     }
 
-    fn add_file_with_path(&mut self, file: &Path, path: &Path) -> Result<bool> {
+    fn add_file_with_path(&mut self, file: &Utf8Path, path: &Utf8Path) -> Result<bool> {
         ensure!(
             file.exists(),
             "file {} does not exist",
-            file.to_string_lossy().red().bold()
+            file.as_str().red().bold()
         );
         let file = fs::canonicalize(file)?;
         let path = path.to_path_buf();
@@ -189,7 +180,7 @@ impl Initramfs {
         Ok(true)
     }
 
-    fn add_directory(&mut self, dir: &Path) {
+    fn add_directory(&mut self, dir: &Utf8Path) {
         if self.files.contains(dir) {
             return;
         }
@@ -203,7 +194,7 @@ impl Initramfs {
         );
     }
 
-    fn add_entry(&mut self, path: &Path, entry: Entry) {
+    fn add_entry(&mut self, path: &Utf8Path, entry: Entry) {
         debug!("Added entry {:?}", path);
         self.files.insert(path.into());
         self.entries.push(entry);

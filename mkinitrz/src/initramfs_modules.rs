@@ -2,19 +2,20 @@ use std::{
     collections::HashSet,
     fs::File,
     io::{BufRead, BufReader},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use anyhow::{Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use rayon::prelude::*;
 
 use crate::initramfs_type::InitramfsType;
 
-fn is_module_needed(name: &str, path: &Path) -> bool {
+fn is_module_needed(name: &str, path: &Utf8Path) -> bool {
     let path = path
         .strip_prefix("kernel/")
-        .expect("expected filename starting with 'kernel', malformed modules.dep");
-    let path_str = path.as_os_str().to_str().unwrap();
+        .expect("expected filename starting with 'kernel', malformed modules.dep")
+        .as_str();
     // https://github.com/distr1/distri/blob/master/cmd/distri/initrd.go#L45
     if path.starts_with("fs") && !path.starts_with("fs/nls") {
         return true; // file systems
@@ -25,21 +26,21 @@ fn is_module_needed(name: &str, path: &Path) -> bool {
     if path.starts_with("drivers/md/") || path.starts_with("lib/") {
         return true; // device mapper
     }
-    if path_str.contains("sd_mod")
-        || path_str.contains("sr_mod")
-        || path_str.contains("usb_storage")
-        || path_str.contains("firewire-sbp2")
-        || path_str.contains("block")
-        || path_str.contains("scsi")
-        || path_str.contains("fusion")
-        || path_str.contains("nvme")
-        || path_str.contains("mmc")
-        || path_str.contains("tifm_")
-        || path_str.contains("virtio")
-        || path_str.contains("drivers/ata/")
-        || path_str.contains("drivers/usb/host/")
-        || path_str.contains("drivers/usb/storage/")
-        || path_str.contains("drivers/firewire/")
+    if path.contains("sd_mod")
+        || path.contains("sr_mod")
+        || path.contains("usb_storage")
+        || path.contains("firewire-sbp2")
+        || path.contains("block")
+        || path.contains("scsi")
+        || path.contains("fusion")
+        || path.contains("nvme")
+        || path.contains("mmc")
+        || path.contains("tifm_")
+        || path.contains("virtio")
+        || path.contains("drivers/ata/")
+        || path.contains("drivers/usb/host/")
+        || path.contains("drivers/usb/storage/")
+        || path.contains("drivers/firewire/")
     {
         return true; // block devices
     }
@@ -56,9 +57,9 @@ fn is_module_needed(name: &str, path: &Path) -> bool {
 
 pub fn get_modules(
     initramfs_type: InitramfsType,
-    kroot: &Path,
+    kroot: &Utf8Path,
     additional_modules: Vec<String>,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<Utf8PathBuf>> {
     let additional_modules = additional_modules.into_iter().collect::<HashSet<String>>();
     let modules = get_all_modules(kroot)?;
 
@@ -69,7 +70,7 @@ pub fn get_modules(
                 is_module_needed(name, path) || additional_modules.contains(name)
             })
             .map(|(_, path)| kroot.join(path))
-            .collect::<Vec<PathBuf>>(),
+            .collect::<Vec<Utf8PathBuf>>(),
         InitramfsType::Host => {
             let host_modules = get_host_modules()?.into_iter().collect::<HashSet<String>>();
             modules
@@ -79,12 +80,12 @@ pub fn get_modules(
                         || additional_modules.contains(name)
                 })
                 .map(|(_, path)| kroot.join(path))
-                .collect::<Vec<PathBuf>>()
+                .collect::<Vec<Utf8PathBuf>>()
         }
     })
 }
 
-fn get_module_name(filename: &Path) -> Result<String> {
+fn get_module_name(filename: &Utf8Path) -> Result<String> {
     Ok(filename
         .file_stem()
         .and_then(|module| Path::new(module).file_stem())
@@ -99,14 +100,14 @@ fn get_module_name(filename: &Path) -> Result<String> {
         .to_string())
 }
 
-fn get_all_modules(kroot: &Path) -> Result<Vec<(String, PathBuf)>> {
+fn get_all_modules(kroot: &Utf8Path) -> Result<Vec<(String, Utf8PathBuf)>> {
     BufReader::new(
         File::open(kroot.join("modules.dep")).with_context(|| "unable to open modules.dep")?,
     )
     .lines()
     .map_while(Result::ok)
-    .map(|line| -> Result<(String, PathBuf)> {
-        let module_path = Path::new(
+    .map(|line| -> Result<(String, Utf8PathBuf)> {
+        let module_path = Utf8Path::new(
             line.split(':')
                 .next()
                 .with_context(|| "unable to get module from modules.dep")?,

@@ -1,6 +1,7 @@
 // https://github.com/Farenjihn/elusive/blob/151b7e8080b75944327f949cbf2eab25490e5341/src/depend.rs
 
 use anyhow::{bail, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use log::error;
 use object::{
     elf::{FileHeader32, FileHeader64, DT_NEEDED, DT_STRSZ, DT_STRTAB, PT_DYNAMIC},
@@ -10,14 +11,13 @@ use object::{
     },
     Endianness, StringTable,
 };
-use std::convert::TryInto;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::{convert::TryInto, path::PathBuf};
 
-pub fn resolve(path: &Path) -> Result<Vec<PathBuf>> {
+pub fn resolve(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
     let data = fs::read(path)?;
 
     let kind = FileKind::parse(&*data)?;
@@ -97,7 +97,7 @@ where
     Ok(needed)
 }
 
-fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<PathBuf>) -> Result<()> {
+fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<Utf8PathBuf>) -> Result<()> {
     let name = CString::new(lib.as_bytes())?;
     let mut linkmap = MaybeUninit::<*mut link_map>::uninit();
 
@@ -147,7 +147,11 @@ fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<PathBuf>) -> Result<()> {
     };
 
     for name in names {
-        let path = PathBuf::from(OsStr::from_bytes(name.to_bytes()));
+        let path = Utf8PathBuf::from_path_buf(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
+            .map_err(|path| {
+                anyhow::anyhow!("unable to convert path {} to utf8", path.to_string_lossy())
+            })?;
+
         resolved.push(path);
     }
 
@@ -177,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_resolver() -> Result<()> {
-        let ls = PathBuf::from("/bin/ls");
+        let ls = Utf8PathBuf::from("/bin/ls");
 
         if ls.exists() {
             let dependencies = resolve(&ls)?;
@@ -187,8 +191,6 @@ mod tests {
                 if lib
                     .file_name()
                     .expect("library path should have filename")
-                    .to_str()
-                    .expect("filename should be valid utf8")
                     .starts_with("libc")
                 {
                     found_libc = true;

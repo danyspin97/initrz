@@ -6,14 +6,13 @@ mod initramfs_type;
 mod newc;
 
 use std::{
-    ffi::OsString,
     fs::{self, File},
     io::Write,
     path::Path,
 };
 
 use anyhow::{ensure, Context, Result};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use colored::Colorize;
 use simplelog::{ColorChoice, LevelFilter, TermLogger, TerminalMode};
@@ -31,7 +30,7 @@ struct Opts {
         long = "config",
         default_value = "/etc/initrz/mkinitrz.conf"
     )]
-    config: OsString,
+    config: Utf8PathBuf,
     #[clap(long = "host-only")]
     host: bool,
     #[clap(short = 'k', long = "kver")]
@@ -103,8 +102,10 @@ fn main() -> Result<()> {
                 InitramfsType::General
             },
             // Canonicalize path to avoid problems with dowser and filter
-            fs::canonicalize(kernel_modules)?,
-            Config::new(Path::new(&opts.config))?,
+            Utf8PathBuf::from_path_buf(fs::canonicalize(kernel_modules)?).map_err(|path| {
+                anyhow::anyhow!("unable to convert path {} to utf8", path.to_string_lossy())
+            })?,
+            Config::new(&opts.config)?,
         )?
         .into_bytes()?,
     )?;
