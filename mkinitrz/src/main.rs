@@ -41,6 +41,8 @@ struct Opts {
     quiet: bool,
     #[clap(short = 'v', long = "verbose", action = clap::ArgAction::Count)]
     verbose: u8,
+    #[clap(long, default_value = "/lib/modules")]
+    kernel_modules_path: Utf8PathBuf,
 }
 
 fn main() -> Result<()> {
@@ -72,14 +74,24 @@ fn main() -> Result<()> {
         3,
     )?;
 
-    let kernel_modules = Path::new("/lib/modules").join(&opts.kernel_version);
+    ensure!(
+        opts.kernel_modules_path.exists(),
+        "{} is does not exists",
+        opts.kernel_modules_path.as_str().red()
+    );
+    ensure!(
+        opts.kernel_modules_path.is_dir(),
+        "{} is not a directory",
+        opts.kernel_modules_path.as_str().red()
+    );
+    let kernel_modules = opts.kernel_modules_path.join(&opts.kernel_version);
     // ensure that the path kernel_modules exists. If not, show the user all available kernel
     // versions
     ensure!(
         kernel_modules.exists(),
         "kernel version {} not found. Available versions: {}",
         opts.kernel_version.red(),
-        Utf8Path::new("/lib/modules")
+        opts.kernel_modules_path
             .read_dir()?
             .filter_map(|entry| {
                 entry.ok().and_then(|entry| {
