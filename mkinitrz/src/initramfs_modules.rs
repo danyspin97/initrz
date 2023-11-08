@@ -7,15 +7,21 @@ use std::{
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
+use colored::Colorize;
+use log::warn;
 use rayon::prelude::*;
 
 use crate::initramfs_type::InitramfsType;
 
 fn is_module_needed(name: &str, path: &Utf8Path) -> bool {
-    let path = path
-        .strip_prefix("kernel/")
-        .expect("expected filename starting with 'kernel', malformed modules.dep")
-        .as_str();
+    let path = match path.strip_prefix("kernel/") {
+        Ok(path) => path.as_str(),
+        Err(_) => {
+            warn!("module {} is not supported", path.as_str().purple().bold());
+            return false;
+        }
+    };
+
     // https://github.com/distr1/distri/blob/master/cmd/distri/initrd.go#L45
     if path.starts_with("fs") && !path.starts_with("fs/nls") {
         return true; // file systems
