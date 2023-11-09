@@ -319,6 +319,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-format"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fcb859e047d667f798f913a2cd0d5c214b85944d1191efa8146c98888fc557b"
+
+[[package]]
 name = "getrandom"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -371,6 +377,7 @@ dependencies = [
  "bstr",
  "dowser",
  "either",
+ "file-format",
  "glob",
  "libblkid-rs",
  "libc",
@@ -385,6 +392,7 @@ dependencies = [
  "serde_yaml",
  "simplelog",
  "xz2",
+ "zstd",
 ]
 
 [[package]]

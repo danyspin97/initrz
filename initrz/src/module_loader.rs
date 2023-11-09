@@ -10,6 +10,8 @@ use std::io::{BufRead, BufReader, Read};
 use std::mem::drop;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use file_format::FileFormat;
+use zstd;
 
 pub struct ModAlias {
     pattern: Pattern,
@@ -113,7 +115,7 @@ impl ModuleLoader {
         let kernel_root = Path::new("/lib/modules").join(kernel_version);
         let mut modules = HashSet::new();
 
-        modules.reserve(glob(&kernel_root.join("*.ko.xz").as_os_str().to_string_lossy())?.count());
+        modules.reserve(glob(&kernel_root.join("*.ko.{xz,zst}").as_os_str().to_string_lossy())?.count());
         Ok(ModuleLoader {
             modules: parse_module_dep(&kernel_root.join("modules.dep"))?,
             aliases: parse_module_alias(&kernel_root.join("modules.alias"))?,
@@ -146,8 +148,13 @@ impl ModuleLoader {
             let filename = self.kernel_root.join(&module.filename);
             let module_file =
                 File::open(&filename).with_context(|| format!("unable to find {:?}", filename))?;
+
             let mut buf = Vec::new();
-            XzDecoder::new(BufReader::new(module_file)).read_to_end(&mut buf)?;
+            match FileFormat::from_file(&filename)? {
+                FileFormat::Zstandard => buf = zstd::stream::decode_all(BufReader::new(module_file))?,
+                FileFormat::Xz => _ = XzDecoder::new(BufReader::new(module_file)).read_to_end(&mut buf)?,
+                unknown_format => warn!("unsupported format for module {}: {}", filename.to_str().unwrap(), unknown_format)
+            }
 
             // TODO
             // init_module(&buf, &CString::new("")?).with_context(|| {

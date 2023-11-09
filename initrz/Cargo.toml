@@ -24,4 +24,6 @@ serde = { version = "1.0.192", features = ["derive"] }
 serde_yaml = "0.9.27"
 simplelog = "0.12.1"
 xz2 = "0.1.7"
+file-format = "0.22.0"
+zstd = "0.13.0"
 
