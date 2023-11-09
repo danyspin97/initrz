@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use glob::{glob, Pattern};
 use log::{debug, warn};
-// use nix::kmod::init_module;
+use nix::kmod::init_module;
 use xz2::bufread::XzDecoder;
 
 use std::collections::{HashMap, HashSet};
@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::mem::drop;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::ffi::CString;
 use file_format::FileFormat;
 use zstd;
 
@@ -156,10 +157,9 @@ impl ModuleLoader {
                 unknown_format => warn!("unsupported format for module {}: {}", filename.to_str().unwrap(), unknown_format)
             }
 
-            // TODO
-            // init_module(&buf, &CString::new("")?).with_context(|| {
-            //     format!("finit_module call failed when loading {}", module_name)
-            // })?;
+            init_module(&buf, &CString::new("")?).with_context(|| {
+                format!("finit_module call failed when loading {}", module_name)
+            })?;
         }
 
         Ok(true)
