@@ -70,15 +70,32 @@ impl Initramfs {
                 .build(),
         );
 
-        initramfs.add_file(&kroot.join("modules.dep"))?;
-        initramfs.add_file(&kroot.join("modules.alias"))?;
+        let modules_dep = &kroot.join("modules.dep");
+        initramfs.add_file_with_path(
+            modules_dep,
+            &Utf8Path::new("/lib/modules")
+                .join(modules_dep.strip_prefix(kroot.parent().unwrap()).unwrap()),
+        )?;
+        let modules_alias = &kroot.join("modules.alias");
+        initramfs.add_file_with_path(
+            modules_alias,
+            &Utf8Path::new("/lib/modules")
+                .join(modules_alias.strip_prefix(kroot.parent().unwrap()).unwrap()),
+        )?;
 
         initramfs.apply_config(&config);
 
         initramfs_modules::get_modules(initramfs_type.clone(), &kroot, config.modules)?
             .iter()
             .try_for_each(|module| -> Result<()> {
-                initramfs.add_file(module)?;
+                initramfs.add_file_with_path(
+                    module,
+                    &Utf8Path::new("/lib/modules").join(
+                        Utf8Path::new(module)
+                            .strip_prefix(kroot.parent().unwrap())
+                            .unwrap(),
+                    ),
+                )?;
                 Ok(())
             })?;
 
