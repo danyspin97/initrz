@@ -143,28 +143,34 @@ impl Initramfs {
         if !self.add_file_with_path(exe, path)? {
             return Ok(());
         }
-        depend::resolve(Utf8Path::new(exe))?
+        depend::resolve(Utf8Path::new(exe))
+            .with_context(|| format!("unable to get libraries linked to {exe}"))?
             .iter()
             .try_for_each(|lib| self.add_library(lib))?;
 
         Ok(())
     }
 
-    fn add_library(&mut self, lib: &Utf8Path) -> Result<()> {
-        let libname = lib.file_name().unwrap();
-        const PATHS: [&str; 3] = ["/usr/lib/", "/usr/lib64/", "/usr/local/lib/"];
-        let path = PATHS
+    fn add_library(&mut self, lib: &str) -> Result<()> {
+        const PATHS: [&str; 5] = ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/local/lib"];
+
+        let full_path = PATHS
             .iter()
-            .find(|path| {
-                let path = Utf8Path::new(path);
-                path.join(libname).exists()
+            .find_map(|path| {
+                let path = Utf8Path::new(path).join(lib);
+                if path.exists() {
+                    Some(path)
+                } else {
+                    None
+                }
             })
-            .with_context(|| format!("unable to find library {}", libname))?;
-        if !self.add_file_with_path(lib, &Utf8Path::new(path).join(libname))? {
+            .with_context(|| format!("unable to find library {}", lib))?;
+        if !self.add_file(&full_path)? {
             return Ok(());
         }
 
-        depend::resolve(Utf8Path::new(lib))?
+        depend::resolve(Utf8Path::new(&full_path))
+            .with_context(|| format!("unable to get libraries linked to {full_path}"))?
             .iter()
             .try_for_each(|lib| self.add_library(lib))?;
 

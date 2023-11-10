@@ -17,7 +17,7 @@ use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::{convert::TryInto, path::PathBuf};
 
-pub fn resolve(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
+pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
     let data = fs::read(path)?;
 
     let kind = FileKind::parse(&*data)?;
@@ -37,13 +37,16 @@ pub fn resolve(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>> {
         }
     }?;
 
-    let mut resolved = Vec::new();
+    // let mut resolved = Vec::new();
 
-    for lib in needed {
-        walk_linkmap(&lib, &mut resolved)?;
-    }
+    // for lib in &needed {
+    //     walk_linkmap(&lib, &mut resolved)?;
+    // }
 
-    Ok(resolved)
+    Ok(needed
+        .into_iter()
+        .map(|s| s.to_str().expect("Failed to parse utf-8").to_string())
+        .collect())
 }
 
 fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<OsString>>
@@ -97,6 +100,7 @@ where
     Ok(needed)
 }
 
+#[allow(dead_code)]
 fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<Utf8PathBuf>) -> Result<()> {
     let name = CString::new(lib.as_bytes())?;
     let mut linkmap = MaybeUninit::<*mut link_map>::uninit();
@@ -188,11 +192,7 @@ mod tests {
             let mut found_libc = false;
 
             for lib in dependencies {
-                if lib
-                    .file_name()
-                    .expect("library path should have filename")
-                    .starts_with("libc")
-                {
+                if lib.starts_with("libc") {
                     found_libc = true;
                     break;
                 }
