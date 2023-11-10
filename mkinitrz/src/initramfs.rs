@@ -187,27 +187,53 @@ impl Initramfs {
             "file {} does not exist",
             file.as_str().red().bold()
         );
-        let file = fs::canonicalize(file)?;
-        let path = path.to_path_buf();
-        if self.files.contains(&path) {
+
+        if self.files.contains(path) {
             return Ok(false);
         }
-        self.add_directory(
-            path.parent()
-                .expect("Files path shall contain a parent directory"),
-        );
-        self.add_entry(
-            &path,
-            EntryBuilder::file(
-                &path,
-                fs::read(&file).with_context(|| format!("unable to read from file {:?}", file))?,
-            )
-            .with_metadata(
-                &fs::metadata(&file)
-                    .with_context(|| format!("unable to read metadata of file {:?}", file))?,
-            )
-            .build(),
-        );
+
+        if file.is_symlink() {
+            let pointed_file = path.read_link_utf8()?;
+            // if pointed file is not absolute, join the directory of the symlink with the pointed
+            // file
+            let pointed_file = if pointed_file.is_absolute() {
+                pointed_file
+            } else {
+                path.parent()
+                    .expect("Files path shall contain a parent directory")
+                    .join(pointed_file)
+            };
+            self.add_directory(
+                path.parent()
+                    .expect("Files path shall contain a parent directory"),
+            );
+            self.add_entry(
+                path,
+                EntryBuilder::symlink(path, pointed_file.as_std_path())
+                    .mode(DEFAULT_SYMLINK_MODE)
+                    .build(),
+            );
+
+            self.add_file(&pointed_file)?;
+        } else {
+            self.add_directory(
+                path.parent()
+                    .expect("Files path shall contain a parent directory"),
+            );
+            self.add_entry(
+                path,
+                EntryBuilder::file(
+                    path,
+                    fs::read(file)
+                        .with_context(|| format!("unable to read from file {:?}", file))?,
+                )
+                .with_metadata(
+                    &fs::metadata(file)
+                        .with_context(|| format!("unable to read metadata of file {:?}", file))?,
+                )
+                .build(),
+            );
+        }
         Ok(true)
     }
 
