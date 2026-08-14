@@ -22,8 +22,9 @@ use std::{
     os::unix::process::CommandExt,
     path::Path,
     process::Command,
-    sync::{mpsc::channel, Arc},
+    sync::Arc,
     thread,
+    time::Duration,
 };
 
 use device_handler::DeviceHandler;
@@ -98,15 +99,13 @@ fn initrz() -> Result<()> {
     cache.put_cache();
     std::mem::drop(cache);
 
-    info!("creating channels");
-    let (tx, rx) = channel::<String>();
-
     info!("unlocking available devices");
     device_handler.unlock_available_devices()?;
     info!("searching for root");
     device_handler.search_root()?;
 
     info!("starting uevent listener thread");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
     thread::spawn(move || uevent_listener.listen(tx));
 
     info!("traversing /sys modalias files");
@@ -121,8 +120,15 @@ fn initrz() -> Result<()> {
         .filter_map(|modalias| modalias.to_str())
         .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
 
-    info!("receiving unlock results");
-    device_handler.listen(rx)?;
+    let rootwait_secs = cmdline
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("rootwait="))
+        .filter_map(|val| val.parse::<u64>().ok())
+        .last()
+        .unwrap_or(30);
+
+    info!("waiting for root device (timeout {}s)", rootwait_secs);
+    device_handler.listen(rx, Duration::from_secs(rootwait_secs))?;
 
     info!("moving /new_root into /");
     // switch_root

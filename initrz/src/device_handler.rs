@@ -7,7 +7,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
 
 use crate::encrypted_device::EncryptedDevice;
 use crate::encryption_type::EncryptionType;
@@ -74,20 +75,42 @@ impl DeviceHandler {
         })
     }
 
-    pub fn listen(&mut self, device_rx: Receiver<String>) -> Result<()> {
-        loop {
-            let received = device_rx.try_recv();
-            if let Err(err) = received {
-                if err == std::sync::mpsc::TryRecvError::Disconnected {
-                    break;
-                }
-                break;
-            }
-            let received = received.unwrap();
-            self.handle(&received)?;
-        }
+    fn is_ready(&self) -> bool {
+        let all_unlocked = self.encrypted_devices.iter().all(|d| d.unlocked);
+        self.root.devpath.is_some() && all_unlocked
+    }
 
-        Ok(())
+    pub fn listen(&mut self, device_rx: Receiver<String>, timeout: Duration) -> Result<()> {
+        if self.is_ready() {
+            return Ok(());
+        }
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!(
+                    "timed out waiting for root device after {}s",
+                    timeout.as_secs()
+                );
+            }
+            match device_rx.recv_timeout(remaining) {
+                Ok(path) => {
+                    self.handle(&path)?;
+                    if self.is_ready() {
+                        return Ok(());
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    anyhow::bail!(
+                        "timed out waiting for root device after {}s",
+                        timeout.as_secs()
+                    );
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("uevent listener thread exited unexpectedly");
+                }
+            }
+        }
     }
 
     fn get_encrypted_device_mut(&mut self, path: &str) -> Option<&mut EncryptedDevice> {
