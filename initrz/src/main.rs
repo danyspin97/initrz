@@ -16,7 +16,7 @@ mod utils;
 
 use anyhow::{Context, Result};
 use dowser::Dowser;
-use log::{error, info};
+use log::{error, info, warn};
 use nix::unistd::chroot;
 use rayon::prelude::*;
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
@@ -115,13 +115,21 @@ fn initrz() -> Result<()> {
                 .unwrap_or(false)
         })
         .par_iter()
-        .try_for_each(|path| -> Result<()> {
+        .for_each(|path| {
             // The modalias to match against modules.alias (e.g. "pci:v00008086d...") is the
-            // *contents* of the file, not its /sys path.
-            let modalias = fs::read_to_string(path)
-                .with_context(|| format!("unable to read {:?}", path))?;
-            module_loader.load_modalias(modalias.trim())
-        })?;
+            // *contents* of the file, not its /sys path. A single device's module failing to
+            // load (missing firmware, unsupported hardware, ...) shouldn't abort the whole boot.
+            let modalias = match fs::read_to_string(path) {
+                Ok(modalias) => modalias,
+                Err(err) => {
+                    warn!("unable to read {:?}: {}", path, err);
+                    return;
+                }
+            };
+            if let Err(err) = module_loader.load_modalias(modalias.trim()) {
+                warn!("unable to load module for modalias {:?}: {:?}", modalias.trim(), err);
+            }
+        });
 
     let rootwait_secs = cmdline
         .iter()
