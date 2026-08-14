@@ -225,9 +225,9 @@ impl EntryBuilder {
     where
         T: Into<EntryName>,
     {
-        EntryBuilder {
-            entry: Entry::new(name),
-        }
+        let mut entry = Entry::new(name);
+        entry.nlink = 2;
+        EntryBuilder { entry }
     }
 
     /// Create an entry representing a regular file
@@ -235,9 +235,9 @@ impl EntryBuilder {
     where
         T: Into<EntryName>,
     {
-        EntryBuilder {
-            entry: Entry::with_data(name, data),
-        }
+        let mut entry = Entry::with_data(name, data);
+        entry.nlink = 1;
+        EntryBuilder { entry }
     }
 
     /// Create an entry representing a special file
@@ -257,16 +257,16 @@ impl EntryBuilder {
         T: Into<EntryName>,
     {
         let data = path.as_os_str().as_bytes().to_vec();
-        EntryBuilder {
-            entry: Entry::with_data(name, data),
-        }
+        let mut entry = Entry::with_data(name, data);
+        entry.nlink = 1;
+        EntryBuilder { entry }
     }
 
     /// Create a trailer entry
     pub fn trailer() -> Self {
-        EntryBuilder {
-            entry: Entry::new(TRAILER),
-        }
+        let mut entry = Entry::new(TRAILER);
+        entry.nlink = 1;
+        EntryBuilder { entry }
     }
 
     /// Add the provided metadata to the entry
