@@ -1,3 +1,4 @@
+mod btrfs;
 mod device_handler;
 mod encrypted_device;
 mod encryption_type;

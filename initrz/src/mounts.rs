@@ -9,8 +9,10 @@ use anyhow::{Context, Result};
 use log::warn;
 use mount_api::{Fs, FsmountFlags, FsopenFlags, Mount, MountAttrFlags, MoveMountFlags};
 
+use crate::btrfs;
 use crate::module_loader::ModuleLoader;
 use crate::root_device::RootDevice;
+use crate::utils::get_blkid_cache;
 
 pub struct Mounts {
     mountpoints: Vec<(String, Mount)>,
@@ -44,6 +46,9 @@ impl Mounts {
         if !module_loader.load_module(&filesystem)? {
             // Do not fail here because the module could be builtin
             warn!("module {} not found", filesystem);
+        }
+        if filesystem == "btrfs" {
+            register_btrfs_devices();
         }
         let filesystem = CString::new(filesystem)?;
 
@@ -123,6 +128,30 @@ impl Mounts {
             .with_context(|| "unable to move root device into /")?;
 
         Ok(())
+    }
+}
+
+/// Register every currently-known btrfs device with the kernel's multi-device layer, so a
+/// multi-device btrfs root can be mounted from any one member device. Failures are logged and
+/// skipped rather than propagated: a single-device btrfs root doesn't need this at all, and a
+/// device that's already registered (or unreadable) shouldn't block the mount attempt.
+fn register_btrfs_devices() {
+    let mut cache = get_blkid_cache();
+    if cache.probe_all_new().is_err() {
+        return;
+    }
+    for device in cache.iter() {
+        let Ok(devname) = device.devname() else {
+            continue;
+        };
+        let Some(devname) = devname.to_str() else {
+            continue;
+        };
+        if device.tag_iter().any(|tag| tag == ("TYPE".to_string(), "btrfs".to_string())) {
+            if let Err(err) = btrfs::scan_device(devname) {
+                warn!("unable to register btrfs device {:?}: {:?}", devname, err);
+            }
+        }
     }
 }
 
