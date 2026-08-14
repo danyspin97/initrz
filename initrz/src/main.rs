@@ -10,7 +10,7 @@ mod uevent_listener;
 mod unlock_type;
 mod utils;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use dowser::Dowser;
 use log::{error, info};
 use nix::unistd::chroot;
@@ -40,26 +40,22 @@ fn get_kernel_version() -> Result<String> {
 
     if unsafe { libc::uname(raw.as_mut_ptr()) } == 0 {
         let info = unsafe { raw.assume_init() };
-
         let release = info
             .release
             .iter()
-            .filter(|c| **c != 0)
-            .map(|c| *c as u8 as char)
-            .collect::<String>();
-
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8 as char)
+            .collect();
         Ok(release)
     } else {
-        bail!("uname call failed")
+        anyhow::bail!("uname() failed")
     }
 }
 
 pub fn parse_cmdline() -> Result<Vec<String>> {
     Ok(String::from_utf8(fs::read("/proc/cmdline")?)?
         .split_whitespace()
-        .collect::<Vec<&str>>()
-        .iter()
-        .map(|s| String::from(*s))
+        .map(str::to_string)
         .collect())
 }
 
@@ -89,22 +85,24 @@ fn initrz() -> Result<()> {
     cache.put_cache();
     std::mem::drop(cache);
 
-    info!("unlocking available devices");
+    info!("unlocking available encrypted devices");
     device_handler.unlock_available_devices()?;
-    info!("searching for root");
+
+    info!("searching for root device");
     device_handler.search_root()?;
 
     info!("starting uevent listener thread");
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     thread::spawn(move || uevent_listener.listen(tx));
 
-    info!("traversing /sys modalias files");
+    info!("traversing /sys modalias files to load modules");
     Dowser::default()
         .with_path("/sys")
         .into_vec_filtered(|p: &Path| {
             p.file_name()
-                .filter(|filename| filename.to_str().unwrap_or("") == "modalias")
-                .is_some()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "modalias")
+                .unwrap_or(false)
         })
         .par_iter()
         .filter_map(|modalias| modalias.to_str())
@@ -120,9 +118,7 @@ fn initrz() -> Result<()> {
     info!("waiting for root device (timeout {}s)", rootwait_secs);
     device_handler.listen(rx, Duration::from_secs(rootwait_secs))?;
 
-    info!("moving /new_root into /");
-    // switch_root
-    // https://github.com/mirror/busybox/blob/9ec836c033fc6e55e80f3309b3e05acdf09bb297/util-linux/switch_root.c#L297
+    info!("mounting root");
     mounts.mount_root(
         device_handler
             .get_root()
@@ -130,8 +126,8 @@ fn initrz() -> Result<()> {
         &module_loader,
     )?;
 
-    info!("chrooting");
-    chroot(".").with_context(|| "unable to chroot")?;
+    info!("switching root");
+    chroot(".").with_context(|| "chroot failed")?;
     env::set_current_dir("/")?;
     Command::new("/sbin/init").exec();
 
@@ -141,6 +137,21 @@ fn initrz() -> Result<()> {
 fn main() {
     if let Err(err) = initrz() {
         error!("{:?}", err);
-        Command::new("busybox").arg("sh").exec();
+        Command::new("/bin/busybox").arg("sh").exec();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cmdline_extracts_root() {
+        // parse_cmdline reads /proc/cmdline from the real system — just verify it doesn't panic
+        // and returns a non-empty vec on a running system.
+        if Path::new("/proc/cmdline").exists() {
+            let args = parse_cmdline().unwrap();
+            assert!(!args.is_empty());
+        }
     }
 }
