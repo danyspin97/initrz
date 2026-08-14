@@ -1,0 +1,4 @@
+# This is a comment
+luks-home UUID=11111111-2222-3333-4444-555555555555 luks none
+luks-data /dev/sdb1 luks /etc/keys/data.key
+

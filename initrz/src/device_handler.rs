@@ -1,5 +1,3 @@
-extern crate rpassword;
-
 use anyhow::{bail, Context, Result};
 use libcryptsetup_rs::consts::flags::CryptActivate;
 use libcryptsetup_rs::consts::vals::EncryptionFormat;
@@ -22,17 +20,53 @@ const UUID_TAG: &str = "UUID";
 
 pub struct DeviceHandler {
     root: RootDevice,
-    encrypted_devices: Vec<EncryptedDevice>,
+    pub(crate) encrypted_devices: Vec<EncryptedDevice>,
 }
 
 impl DeviceHandler {
     pub fn init(crypttab_path: &str, cmdline: &[String]) -> Result<DeviceHandler> {
-        let encrypted_devices = match Path::new(crypttab_path).exists() {
-            true => parse_crypttab(crypttab_path)?,
-            false => Vec::new(),
+        let mut encrypted_devices = if Path::new(crypttab_path).exists() {
+            parse_crypttab(crypttab_path)?
+        } else {
+            Vec::new()
         };
 
-        // TODO: Mix the devices from the cmdline
+        // Support dracut-compatible rd.luks.uuid=<UUID> on the kernel cmdline.
+        // Each such parameter adds an encrypted device to unlock interactively.
+        // rd.luks.name=<UUID>:<name> sets the dm-crypt target name; otherwise
+        // the name defaults to "luks-<UUID>".
+        let named: std::collections::HashMap<String, String> = cmdline
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("rd.luks.name="))
+            .filter_map(|val| {
+                let mut parts = val.splitn(2, ':');
+                let uuid = parts.next()?.to_string();
+                let name = parts.next()?.to_string();
+                Some((uuid, name))
+            })
+            .collect();
+
+        for arg in cmdline {
+            if let Some(uuid) = arg.strip_prefix("rd.luks.uuid=") {
+                let name = named
+                    .get(uuid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("luks-{}", uuid));
+                // Skip if already present from crypttab
+                if !encrypted_devices
+                    .iter()
+                    .any(|d| matches!(&d.identifier, Identifier::Uuid(u) if u == uuid))
+                {
+                    encrypted_devices.push(EncryptedDevice {
+                        name,
+                        identifier: Identifier::Uuid(uuid.to_string()),
+                        encryption_type: EncryptionType::Luks,
+                        unlock: UnlockType::AskPassphrase,
+                        unlocked: false,
+                    });
+                }
+            }
+        }
 
         Ok(DeviceHandler {
             root: get_root_from_cmdline(cmdline)?,
@@ -56,23 +90,20 @@ impl DeviceHandler {
         Ok(())
     }
 
-    fn get_encrypted_device(&self, path: &str) -> Option<&EncryptedDevice> {
+    fn get_encrypted_device_mut(&mut self, path: &str) -> Option<&mut EncryptedDevice> {
         let blkid_cache = get_blkid_cache();
         let uuid = blkid_cache
             .get_tag_value("UUID", &PathBuf::from(path))
             .unwrap_or_default();
-        self.encrypted_devices
-            .iter()
-            .find(|d| match &d.identifier {
-                Identifier::Path(saved_path) => saved_path == path,
-                Identifier::Uuid(_) => false,
-            })
-            .or_else(|| {
-                self.encrypted_devices.iter().find(|d| match &d.identifier {
-                    Identifier::Path(_) => false,
-                    Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
-                })
-            })
+        // Try path match first, then UUID match
+        if let Some(pos) = self.encrypted_devices.iter().position(|d| match &d.identifier {
+            Identifier::Path(saved_path) => saved_path == path,
+            Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
+        }) {
+            Some(&mut self.encrypted_devices[pos])
+        } else {
+            None
+        }
     }
 
     pub fn get_root(self) -> Option<RootDevice> {
@@ -109,36 +140,30 @@ impl DeviceHandler {
         Ok(false)
     }
 
-    pub fn unlock_available_devices(&self) -> Result<()> {
+    pub fn unlock_available_devices(&mut self) -> Result<()> {
         for device in get_blkid_cache().iter() {
             let devname = device.devname()?;
-            for encrypted_device in &self.encrypted_devices {
-                if match &encrypted_device.identifier {
-                    Identifier::Uuid(uuid) => device
-                        .tag_iter()
-                        .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
-                    Identifier::Path(path) => devname.to_str().unwrap() == path,
-                } {
-                    unlock_luks_device(devname.to_str().unwrap(), encrypted_device)?;
-                }
+            let devname_str = devname.to_str().unwrap();
+            if let Some(pos) = self.encrypted_devices.iter().position(|enc| match &enc.identifier {
+                Identifier::Uuid(uuid) => device
+                    .tag_iter()
+                    .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
+                Identifier::Path(path) => devname_str == path,
+            }) {
+                unlock_luks_device(devname_str, &self.encrypted_devices[pos])?;
+                self.encrypted_devices[pos].unlocked = true;
             }
         }
 
         Ok(())
     }
 
-    pub fn unlock_device(&self, path: &str, encrypted_device: &EncryptedDevice) -> Result<()> {
-        match &encrypted_device.encryption_type {
-            EncryptionType::Luks => unlock_luks_device(path, encrypted_device)?,
-        };
-
-        Ok(())
-    }
-
     pub fn handle(&mut self, path: &str) -> Result<()> {
-        if let Some(encrypted_device) = self.get_encrypted_device(path) {
-            // TODO: execute in another thread and save the result
-            self.unlock_device(path, encrypted_device)?;
+        if let Some(encrypted_device) = self.get_encrypted_device_mut(path) {
+            if !encrypted_device.unlocked {
+                unlock_luks_device(path, encrypted_device)?;
+                encrypted_device.unlocked = true;
+            }
             return Ok(());
         }
 
@@ -207,18 +232,101 @@ fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<
     Ok(())
 }
 
-fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>> {
+pub(crate) fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>> {
     let file =
         File::open(crypttab_path).with_context(|| format!("unable to open {:?}", crypttab_path))?;
-    // TODO: Print errors
     Ok(BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .filter(|line| !line.starts_with('#'))
         .filter(|line| !line.is_empty())
         .map(EncryptedDevice::from_line)
-        .filter_map(|device| device.ok())
+        .filter_map(|device| {
+            if device.is_err() {
+                log::warn!("failed to parse crypttab line: {:?}", device);
+            }
+            device.ok()
+        })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_crypttab() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/crypttab");
+        let devices = parse_crypttab(path).unwrap();
+        assert_eq!(devices.len(), 2);
+
+        assert_eq!(devices[0].name, "luks-home");
+        assert!(matches!(
+            &devices[0].identifier,
+            Identifier::Uuid(u) if u == "11111111-2222-3333-4444-555555555555"
+        ));
+        assert!(matches!(devices[0].unlock, UnlockType::AskPassphrase));
+
+        assert_eq!(devices[1].name, "luks-data");
+        assert!(matches!(
+            &devices[1].identifier,
+            Identifier::Path(p) if p == "/dev/sdb1"
+        ));
+        assert!(matches!(&devices[1].unlock, UnlockType::Key(k) if k == "/etc/keys/data.key"));
+    }
+
+    #[test]
+    fn test_parse_crypttab_missing_file() {
+        assert!(parse_crypttab("/nonexistent/path/crypttab").is_err());
+    }
+
+    fn make_cmdline(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn test_rd_luks_uuid_default_name() {
+        let cmdline =
+            make_cmdline("root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555");
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        assert_eq!(handler.encrypted_devices.len(), 1);
+        assert_eq!(
+            handler.encrypted_devices[0].name,
+            "luks-11111111-2222-3333-4444-555555555555"
+        );
+        assert!(matches!(
+            &handler.encrypted_devices[0].identifier,
+            Identifier::Uuid(u) if u == "11111111-2222-3333-4444-555555555555"
+        ));
+    }
+
+    #[test]
+    fn test_rd_luks_name_override() {
+        let cmdline = make_cmdline(
+            "root=UUID=aaa rd.luks.uuid=dead-beef rd.luks.name=dead-beef:cryptroot",
+        );
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        assert_eq!(handler.encrypted_devices[0].name, "cryptroot");
+    }
+
+    #[test]
+    fn test_rd_luks_no_duplicate_with_crypttab() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/crypttab");
+        // crypttab already has luks-home with this UUID; cmdline should not add a duplicate
+        let cmdline = make_cmdline(
+            "root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555",
+        );
+        let handler = DeviceHandler::init(path, &cmdline).unwrap();
+        let count = handler
+            .encrypted_devices
+            .iter()
+            .filter(|d| {
+                matches!(&d.identifier, Identifier::Uuid(u)
+                    if u == "11111111-2222-3333-4444-555555555555")
+            })
+            .count();
+        assert_eq!(count, 1, "should not duplicate device already in crypttab");
+    }
 }
 
 fn ask_passphrase_for_device(encrypted_device: &EncryptedDevice) -> Result<String> {
