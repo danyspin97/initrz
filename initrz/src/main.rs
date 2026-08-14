@@ -82,16 +82,6 @@ fn initrz() -> Result<()> {
     let mut device_handler = DeviceHandler::init("/etc/crypttab.initramfs", &cmdline)?;
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
-    info!("loading qemu modules");
-    module_loader.load_module("virtio_blk")?;
-    module_loader.load_module("virtio_pci")?;
-    // module_loader.load_module("virtio_net")?;
-
-    // info!("loading essential modules");
-    // module_loader.load_module("usbhid")?;
-
-    // module_loader.load_all_modules()?;
-
     info!("probing available devices");
     let mut cache = get_blkid_cache();
     cache.probe_all()?;
