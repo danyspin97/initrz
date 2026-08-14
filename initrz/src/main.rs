@@ -115,8 +115,13 @@ fn initrz() -> Result<()> {
                 .unwrap_or(false)
         })
         .par_iter()
-        .filter_map(|modalias| modalias.to_str())
-        .try_for_each(|modalias| module_loader.load_modalias(modalias))?;
+        .try_for_each(|path| -> Result<()> {
+            // The modalias to match against modules.alias (e.g. "pci:v00008086d...") is the
+            // *contents* of the file, not its /sys path.
+            let modalias = fs::read_to_string(path)
+                .with_context(|| format!("unable to read {:?}", path))?;
+            module_loader.load_modalias(modalias.trim())
+        })?;
 
     let rootwait_secs = cmdline
         .iter()
