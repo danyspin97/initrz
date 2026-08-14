@@ -1,11 +1,11 @@
 extern crate rpassword;
 
 use anyhow::{bail, Context, Result};
-use libcryptsetup_rs::consts::flags::{CryptActivate, CryptKeyfile};
+use libcryptsetup_rs::consts::flags::CryptActivate;
 use libcryptsetup_rs::consts::vals::EncryptionFormat;
 use libcryptsetup_rs::CryptInit;
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -190,21 +190,19 @@ fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<
         .context_handle()
         .load::<()>(Some(EncryptionFormat::Luks2), None)?;
 
-    match &encrypted_device.unlock {
+    let passphrase = match &encrypted_device.unlock {
         UnlockType::Key(key) => {
-            device
-                .keyfile_handle()
-                .device_read(Path::new(key), 0, None, CryptKeyfile::empty())?;
+            fs::read(key).with_context(|| format!("unable to read keyfile {:?}", key))?
         }
-        UnlockType::AskPassphrase => {
-            device.activate_handle().activate_by_passphrase(
-                Some(&encrypted_device.name),
-                None,
-                ask_passphrase_for_device(encrypted_device)?.as_bytes(),
-                CryptActivate::empty(),
-            )?;
-        }
+        UnlockType::AskPassphrase => ask_passphrase_for_device(encrypted_device)?.into_bytes(),
     };
+
+    device.activate_handle().activate_by_passphrase(
+        Some(&encrypted_device.name),
+        None,
+        &passphrase,
+        CryptActivate::empty(),
+    )?;
 
     Ok(())
 }
