@@ -129,15 +129,16 @@ fn initrz() -> Result<()> {
     info!("switching root");
     chroot(".").with_context(|| "chroot failed")?;
     env::set_current_dir("/")?;
-    Command::new("/sbin/init").exec();
-
-    Ok(())
+    let err = Command::new("/sbin/init").exec();
+    Err(err).with_context(|| "failed to exec /sbin/init")
 }
 
 fn main() {
     if let Err(err) = initrz() {
         error!("{:?}", err);
-        Command::new("/bin/busybox").arg("sh").exec();
+        let err = Command::new("/bin/busybox").arg("sh").exec();
+        error!("failed to exec rescue shell: {:?}", err);
+        std::process::exit(1);
     }
 }
 
