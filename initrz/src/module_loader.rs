@@ -150,7 +150,24 @@ impl ModuleLoader {
             modules_loaded.insert(module_name.to_string());
         }
 
-        let filename = self.kernel_root.join(&module.filename);
+        // From here on, unclaim the slot on any early return so a failed load can be retried
+        // instead of being silently treated as already loaded.
+        match self.load_module_file(module_name, &module.filename) {
+            Ok(loaded) => {
+                if !loaded {
+                    self.modules_loaded.write().unwrap().remove(module_name);
+                }
+                Ok(loaded)
+            }
+            Err(err) => {
+                self.modules_loaded.write().unwrap().remove(module_name);
+                Err(err)
+            }
+        }
+    }
+
+    fn load_module_file(&self, module_name: &str, module_filename: &str) -> Result<bool> {
+        let filename = self.kernel_root.join(module_filename);
         let module_file =
             File::open(&filename).with_context(|| format!("unable to open {:?}", filename))?;
 
