@@ -63,6 +63,19 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
         });
     }
 
+    // CIFS root: root=cifs://<server>/<share>. Credentials/extra options come through the
+    // regular rootflags= mount_options above (e.g. rootflags=username=foo,password=bar).
+    if let Some(share) = identifier.strip_prefix("cifs://") {
+        let devpath = format!("//{}", share);
+        return Ok(RootDevice {
+            identifier: Identifier::Path(devpath.clone()),
+            filesystem: Filesystem::Cifs,
+            devpath: Some(devpath),
+            read_only,
+            mount_options,
+        });
+    }
+
     let fs_str = cmdline
         .iter()
         .filter(|arg| arg.starts_with("root.type="))
@@ -229,4 +242,13 @@ mod tests {
         assert!(root.mount_options.contains(&"vers=4.0".to_string()));
     }
 
+    #[test]
+    fn test_cifs_root() {
+        let cmdline = args("root=cifs://192.168.1.1/share rootflags=username=foo,password=bar");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert_eq!(root.filesystem, Filesystem::Cifs);
+        assert_eq!(root.devpath.as_deref(), Some("//192.168.1.1/share"));
+        assert!(root.mount_options.contains(&"username=foo".to_string()));
+        assert!(root.mount_options.contains(&"password=bar".to_string()));
+    }
 }
