@@ -1,18 +1,17 @@
 use anyhow::{bail, Context, Result};
+use file_format::FileFormat;
 use glob::{glob, Pattern};
 use log::{debug, warn};
 use nix::kmod::init_module;
 use xz2::bufread::XzDecoder;
+use zstd;
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
-use std::mem::drop;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::ffi::CString;
-use file_format::FileFormat;
-use zstd;
 
 pub struct ModAlias {
     pattern: Pattern,
@@ -126,41 +125,54 @@ impl ModuleLoader {
     }
 
     pub fn load_module(&self, module_name: &str) -> Result<bool> {
-        let modules_loaded = self.modules_loaded.read().unwrap();
-        if !modules_loaded.contains(module_name) {
-            drop(modules_loaded);
-            debug!("loading module {}", module_name);
-            let module = self.modules.get(module_name);
-            if module.is_none() {
+        if self.modules_loaded.read().unwrap().contains(module_name) {
+            return Ok(true);
+        }
+
+        let module = match self.modules.get(module_name) {
+            Some(m) => m,
+            None => return Ok(false),
+        };
+
+        debug!("loading module {}", module_name);
+
+        // Load dependencies first (they handle their own dedup)
+        for dep in &module.deps {
+            self.load_module(dep)?;
+        }
+
+        // Claim the slot under write lock; if another thread beat us here, skip loading
+        {
+            let mut modules_loaded = self.modules_loaded.write().unwrap();
+            if modules_loaded.contains(module_name) {
+                return Ok(true);
+            }
+            modules_loaded.insert(module_name.to_string());
+        }
+
+        let filename = self.kernel_root.join(&module.filename);
+        let module_file =
+            File::open(&filename).with_context(|| format!("unable to open {:?}", filename))?;
+
+        let buf = match FileFormat::from_file(&filename)? {
+            FileFormat::Zstandard => zstd::stream::decode_all(BufReader::new(module_file))?,
+            FileFormat::Xz => {
+                let mut buf = Vec::new();
+                XzDecoder::new(BufReader::new(module_file)).read_to_end(&mut buf)?;
+                buf
+            }
+            fmt => {
+                warn!(
+                    "unsupported format for module {}: {}",
+                    filename.display(),
+                    fmt
+                );
                 return Ok(false);
             }
-            let module = module.unwrap();
-            // Some modules could be builtin, do not block
-            module.deps.iter().try_for_each(|dep| -> Result<()> {
-                self.load_module(dep)?;
-                Ok(())
-            })?;
-            let mut modules_loaded = self.modules_loaded.write().unwrap();
-            if !modules_loaded.contains(module_name) {
-                modules_loaded.insert(String::from(module_name));
-            }
-            // unlock so that other modules can be loaded in parallel
-            drop(modules_loaded);
-            let filename = self.kernel_root.join(&module.filename);
-            let module_file =
-                File::open(&filename).with_context(|| format!("unable to find {:?}", filename))?;
+        };
 
-            let mut buf = Vec::new();
-            match FileFormat::from_file(&filename)? {
-                FileFormat::Zstandard => buf = zstd::stream::decode_all(BufReader::new(module_file))?,
-                FileFormat::Xz => _ = XzDecoder::new(BufReader::new(module_file)).read_to_end(&mut buf)?,
-                unknown_format => warn!("unsupported format for module {}: {}", filename.to_str().unwrap(), unknown_format)
-            }
-
-            init_module(&buf, &CString::new("")?).with_context(|| {
-                format!("finit_module call failed when loading {}", module_name)
-            })?;
-        }
+        init_module(&buf, &CString::new("")?)
+            .with_context(|| format!("init_module failed when loading {}", module_name))?;
 
         Ok(true)
     }
