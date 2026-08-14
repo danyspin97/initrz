@@ -39,8 +39,8 @@ impl Mounts {
         // Load essential module
         module_loader.load_module("crc32c_generic")?;
 
-        let devname = root.devpath.unwrap();
-        let filesystem = root.filesystem.get_filesystem_string(&devname)?;
+        let devpath = root.devpath.unwrap();
+        let filesystem = root.filesystem.get_filesystem_string(&devpath)?;
         if !module_loader.load_module(&filesystem)? {
             // Do not fail here because the module could be builtin
             warn!("module {} not found", filesystem);
@@ -54,9 +54,39 @@ impl Mounts {
             )
         })?;
         let source_str: CString = CString::new("source")?;
-        let devname = CString::new(devname)?;
+        let devname = CString::new(devpath.clone())?;
         fs.set_string(&source_str, &devname)
             .with_context(|| format!("unable to set source {:?} for filesystem", devname))?;
+
+        let mut attr_flags = MountAttrFlags::empty();
+        if root.read_only {
+            attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY;
+        }
+        for option in &root.mount_options {
+            match option.as_str() {
+                "ro" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY,
+                "rw" => attr_flags.remove(MountAttrFlags::MOUNT_ATTR_RDONLY),
+                "noatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOATIME,
+                "nodiratime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODIRATIME,
+                "relatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RELATIME,
+                "strictatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_STRICTATIME,
+                "nosuid" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOSUID,
+                "nodev" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODEV,
+                "noexec" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOEXEC,
+                // Anything else is a filesystem-specific option (e.g. ext4's
+                // "discard" or "data=ordered"); pass it straight to the
+                // filesystem context.
+                _ => match option.split_once('=') {
+                    Some((key, value)) => fs
+                        .set_string(&CString::new(key)?, &CString::new(value)?)
+                        .with_context(|| format!("unable to set mount option {}", option))?,
+                    None => fs
+                        .set_flag(&CString::new(option.as_str())?)
+                        .with_context(|| format!("unable to set mount option {}", option))?,
+                },
+            }
+        }
+
         fs.create().with_context(|| {
             format!(
                 "unable to create filesystem context of type {:?} for device {:?}",
@@ -64,7 +94,7 @@ impl Mounts {
             )
         })?;
         let mount = fs
-            .mount(FsmountFlags::empty(), MountAttrFlags::empty())
+            .mount(FsmountFlags::empty(), attr_flags)
             .with_context(|| format!("unable to mount {:?}", devname))?;
 
         mount.move_mount(

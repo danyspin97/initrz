@@ -9,6 +9,9 @@ pub struct RootDevice {
     pub filesystem: Filesystem,
     pub identifier: Identifier,
     pub devpath: Option<String>,
+    pub read_only: bool,
+    /// Raw mount options from rootflags=, e.g. ["noatime", "discard"]
+    pub mount_options: Vec<String>,
 }
 
 pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
@@ -27,6 +30,21 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
         .and_then(|s| s.strip_prefix("root.type="))
         .unwrap_or("auto");
 
+    // Root is read-only unless rw is the last of ro/rw to appear on the cmdline.
+    let read_only = cmdline
+        .iter()
+        .filter(|arg| arg.as_str() == "ro" || arg.as_str() == "rw")
+        .last()
+        .map(|arg| arg == "ro")
+        .unwrap_or(true);
+
+    let mount_options = cmdline
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("rootflags="))
+        .last()
+        .map(|opts| opts.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+
     Ok(RootDevice {
         identifier: if let Some(uuid) = identifier.strip_prefix("UUID=") {
             Identifier::Uuid(uuid.to_string())
@@ -35,6 +53,8 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
         },
         filesystem: fs_str.try_into()?,
         devpath: None,
+        read_only,
+        mount_options,
     })
 }
 
@@ -73,5 +93,47 @@ mod tests {
         let cmdline = args("root=/dev/sda1 root=/dev/nvme0n1p2");
         let root = get_root_from_cmdline(&cmdline).unwrap();
         assert!(matches!(&root.identifier, Identifier::Path(p) if p == "/dev/nvme0n1p2"));
+    }
+
+    #[test]
+    fn test_default_read_only() {
+        let cmdline = args("root=/dev/sda1");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(root.read_only);
+    }
+
+    #[test]
+    fn test_rw_overrides_default() {
+        let cmdline = args("root=/dev/sda1 rw");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(!root.read_only);
+    }
+
+    #[test]
+    fn test_last_of_ro_rw_wins() {
+        let cmdline = args("root=/dev/sda1 rw ro");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(root.read_only);
+
+        let cmdline = args("root=/dev/sda1 ro rw");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(!root.read_only);
+    }
+
+    #[test]
+    fn test_rootflags_parsing() {
+        let cmdline = args("root=/dev/sda1 rootflags=noatime,discard,data=ordered");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert_eq!(
+            root.mount_options,
+            vec!["noatime", "discard", "data=ordered"]
+        );
+    }
+
+    #[test]
+    fn test_no_rootflags_defaults_empty() {
+        let cmdline = args("root=/dev/sda1");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(root.mount_options.is_empty());
     }
 }
