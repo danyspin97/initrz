@@ -5,3 +5,8 @@ members = [
     "initrz",
     "mkinitrz",
 ]
+
+[workspace.dependencies]
+# time 0.3.30 has a type inference regression with Rust 1.65+ strict mode;
+# pin to 0.3.36+ which has the fix.
+time = "0.3.36"
