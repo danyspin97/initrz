@@ -7,6 +7,7 @@ mod identifier;
 mod loop_device;
 mod module_loader;
 mod mounts;
+mod network;
 mod resume;
 mod root_device;
 mod uevent_listener;
@@ -75,6 +76,9 @@ fn initrz() -> Result<()> {
 
     info!("parsing command line");
     let cmdline = parse_cmdline()?;
+
+    info!("configuring network");
+    network::configure_from_cmdline(&cmdline)?;
 
     info!("creating internal objects");
     let module_loader = Arc::new(ModuleLoader::init(&get_kernel_version()?)?);
