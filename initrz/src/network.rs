@@ -25,12 +25,15 @@ struct StaticIpConfig {
     device: Option<String>,
 }
 
-/// Bring up networking from the kernel `ip=` cmdline parameter, if present.
+/// Bring up networking from the kernel `ip=` and `nameserver=` cmdline parameters, if present.
 ///
 /// Only static configuration is supported (`ip=<client>:<server>:<gw>:<mask>:<host>:<dev>:off`
 /// and friends) - DHCP is intentionally out of scope. If `ip=` requests DHCP/autoconf, or there
-/// is no `ip=` parameter at all, this is a no-op (logged, non-fatal) rather than an error.
+/// is no `ip=` parameter at all, that part is a no-op (logged, non-fatal) rather than an error.
+/// `nameserver=<ip>` (repeatable) is independent of `ip=` and writes `/etc/resolv.conf`.
 pub fn configure_from_cmdline(cmdline: &[String]) -> Result<()> {
+    write_resolv_conf(cmdline)?;
+
     let Some(param) = cmdline.iter().filter(|arg| arg.starts_with("ip=")).last() else {
         return Ok(());
     };
@@ -167,6 +170,27 @@ fn netmask_to_prefix_len(mask: Ipv4Addr) -> Result<u8> {
         bail!("netmask {} is not a contiguous prefix mask", mask);
     }
     Ok(prefix as u8)
+}
+
+/// Writes `/etc/resolv.conf` from one or more `nameserver=<ip>` cmdline parameters, so hostname
+/// lookups (e.g. an NFS/CIFS root given by name) work during the initramfs stage. A no-op if no
+/// `nameserver=` parameter is present.
+fn write_resolv_conf(cmdline: &[String]) -> Result<()> {
+    let nameservers: Vec<&str> = cmdline
+        .iter()
+        .filter_map(|arg| arg.strip_prefix("nameserver="))
+        .collect();
+    if nameservers.is_empty() {
+        return Ok(());
+    }
+
+    info!("writing /etc/resolv.conf with nameserver(s) {:?}", nameservers);
+    fs::write("/etc/resolv.conf", format_resolv_conf(&nameservers))
+        .with_context(|| "unable to write /etc/resolv.conf")
+}
+
+fn format_resolv_conf(nameservers: &[&str]) -> String {
+    nameservers.iter().map(|ns| format!("nameserver {}\n", ns)).collect()
 }
 
 fn pick_default_device() -> Result<String> {
@@ -335,5 +359,23 @@ mod tests {
         );
         assert_eq!(netmask_to_prefix_len(Ipv4Addr::new(0, 0, 0, 0)).unwrap(), 0);
         assert!(netmask_to_prefix_len(Ipv4Addr::new(255, 0, 255, 0)).is_err());
+    }
+
+    #[test]
+    fn test_format_resolv_conf_single() {
+        assert_eq!(format_resolv_conf(&["8.8.8.8"]), "nameserver 8.8.8.8\n");
+    }
+
+    #[test]
+    fn test_format_resolv_conf_multiple() {
+        assert_eq!(
+            format_resolv_conf(&["8.8.8.8", "1.1.1.1"]),
+            "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
+        );
+    }
+
+    #[test]
+    fn test_format_resolv_conf_empty() {
+        assert_eq!(format_resolv_conf(&[]), "");
     }
 }
