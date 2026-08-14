@@ -138,12 +138,41 @@ fn initrz() -> Result<()> {
     Err(err).with_context(|| "failed to exec /sbin/init")
 }
 
+async fn run_rescue_shell() -> Result<()> {
+    let shell = brush_core::Shell::builder()
+        .interactive(true)
+        .login(true)
+        .build()
+        .await
+        .with_context(|| "failed to create rescue shell")?;
+    let shell_ref: brush_interactive::ShellRef = Arc::new(tokio::sync::Mutex::new(shell));
+    let mut input = brush_interactive::BasicInputBackend;
+    let options = brush_interactive::InteractiveOptions::default();
+    let mut interactive_shell =
+        brush_interactive::InteractiveShell::new(&shell_ref, &mut input, &options)
+            .with_context(|| "failed to start rescue shell")?;
+
+    interactive_shell
+        .run_interactively()
+        .await
+        .with_context(|| "rescue shell exited with an error")
+}
+
 fn main() {
     if let Err(err) = initrz() {
         error!("{:?}", err);
-        let err = Command::new("/bin/busybox").arg("sh").exec();
-        error!("failed to exec rescue shell: {:?}", err);
-        std::process::exit(1);
+        info!("entering rescue shell");
+
+        let rescue_result = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .with_context(|| "failed to create tokio runtime for rescue shell")
+            .and_then(|runtime| runtime.block_on(run_rescue_shell()));
+
+        if let Err(err) = rescue_result {
+            error!("failed to run rescue shell: {:?}", err);
+            std::process::exit(1);
+        }
     }
 }
 

@@ -28,5 +28,5 @@ file-format = "0.22.0"
 zstd = "0.13.0"
 brush-core = "0.5.0"
 brush-interactive = { version = "0.4.0", default-features = false, features = ["basic"] }
-tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread"] }
 
