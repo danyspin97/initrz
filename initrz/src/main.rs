@@ -5,6 +5,7 @@ mod filesystem;
 mod identifier;
 mod module_loader;
 mod mounts;
+mod resume;
 mod root_device;
 mod uevent_listener;
 mod unlock_type;
@@ -87,6 +88,9 @@ fn initrz() -> Result<()> {
 
     info!("unlocking available encrypted devices");
     device_handler.unlock_available_devices()?;
+
+    info!("searching for hibernation resume device");
+    device_handler.search_resume()?;
 
     info!("searching for root device");
     device_handler.search_root()?;

@@ -13,14 +13,22 @@ use std::time::Duration;
 use crate::encrypted_device::EncryptedDevice;
 use crate::encryption_type::EncryptionType;
 use crate::identifier::Identifier;
+use crate::resume;
 use crate::root_device::{get_root_from_cmdline, RootDevice};
 use crate::unlock_type::UnlockType;
 use crate::utils::get_blkid_cache;
 
 const UUID_TAG: &str = "UUID";
 
+struct ResumeConfig {
+    identifier: Identifier,
+    offset: Option<u64>,
+    devpath: Option<String>,
+}
+
 pub struct DeviceHandler {
     root: RootDevice,
+    resume: Option<ResumeConfig>,
     pub(crate) encrypted_devices: Vec<EncryptedDevice>,
 }
 
@@ -69,15 +77,33 @@ impl DeviceHandler {
             }
         }
 
+        // resume=<UUID=...|path> selects a device to look for a hibernation
+        // image on; resume_offset=<bytes> is needed for swap-file resume.
+        let resume = cmdline
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("resume="))
+            .last()
+            .map(|identifier| ResumeConfig {
+                identifier: Identifier::from(identifier),
+                offset: cmdline
+                    .iter()
+                    .filter_map(|arg| arg.strip_prefix("resume_offset="))
+                    .filter_map(|val| val.parse::<u64>().ok())
+                    .last(),
+                devpath: None,
+            });
+
         Ok(DeviceHandler {
             root: get_root_from_cmdline(cmdline)?,
+            resume,
             encrypted_devices,
         })
     }
 
     fn is_ready(&self) -> bool {
         let all_unlocked = self.encrypted_devices.iter().all(|d| d.unlocked);
-        self.root.devpath.is_some() && all_unlocked
+        let resume_ready = self.resume.as_ref().map_or(true, |r| r.devpath.is_some());
+        self.root.devpath.is_some() && all_unlocked && resume_ready
     }
 
     pub fn listen(&mut self, device_rx: Receiver<String>, timeout: Duration) -> Result<()> {
@@ -145,6 +171,50 @@ impl DeviceHandler {
             .unwrap_or(false)
     }
 
+    fn is_resume(&self, devname: &str) -> bool {
+        self.resume
+            .as_ref()
+            .filter(|r| r.devpath.is_none())
+            .and_then(|r| r.identifier.get_path().ok())
+            .map(|path| path == devname)
+            .unwrap_or(false)
+    }
+
+    pub fn search_resume(&mut self) -> Result<bool> {
+        let identifier = match &self.resume {
+            Some(r) if r.devpath.is_none() => &r.identifier,
+            _ => return Ok(false),
+        };
+
+        let mut found = None;
+        for device in get_blkid_cache().iter() {
+            let devname = device.devname()?;
+            let matched = match identifier {
+                Identifier::Uuid(uuid) => device
+                    .tag_iter()
+                    .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
+                Identifier::Path(path) => devname.to_str().unwrap() == path,
+            };
+            if matched {
+                found = Some(devname.to_str().unwrap().to_string());
+                break;
+            }
+        }
+
+        let Some(devpath) = found else {
+            return Ok(false);
+        };
+        self.mark_resume_found(devpath)?;
+        Ok(true)
+    }
+
+    fn mark_resume_found(&mut self, devpath: String) -> Result<()> {
+        let resume = self.resume.as_mut().expect("resume is set");
+        resume::try_resume(&devpath, resume.offset)?;
+        resume.devpath = Some(devpath);
+        Ok(())
+    }
+
     pub fn search_root(&mut self) -> Result<bool> {
         for device in get_blkid_cache().iter() {
             let devname = device.devname()?;
@@ -192,6 +262,11 @@ impl DeviceHandler {
 
         if self.is_root(path) {
             self.root.devpath = Some(path.to_string());
+            return Ok(());
+        }
+
+        if self.is_resume(path) {
+            self.mark_resume_found(path.to_string())?;
             return Ok(());
         }
 
@@ -350,6 +425,31 @@ mod tests {
             })
             .count();
         assert_eq!(count, 1, "should not duplicate device already in crypttab");
+    }
+
+    #[test]
+    fn test_resume_uuid_parsed() {
+        let cmdline = make_cmdline("root=UUID=aaa resume=UUID=deadbeef-0000");
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let resume = handler.resume.as_ref().unwrap();
+        assert!(matches!(&resume.identifier, Identifier::Uuid(u) if u == "deadbeef-0000"));
+        assert_eq!(resume.offset, None);
+    }
+
+    #[test]
+    fn test_resume_offset_parsed() {
+        let cmdline = make_cmdline("root=UUID=aaa resume=/dev/sda2 resume_offset=12345");
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let resume = handler.resume.as_ref().unwrap();
+        assert!(matches!(&resume.identifier, Identifier::Path(p) if p == "/dev/sda2"));
+        assert_eq!(resume.offset, Some(12345));
+    }
+
+    #[test]
+    fn test_no_resume_by_default() {
+        let cmdline = make_cmdline("root=UUID=aaa");
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        assert!(handler.resume.is_none());
     }
 }
 
