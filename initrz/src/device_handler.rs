@@ -317,25 +317,55 @@ impl DeviceHandler {
     }
 }
 
+/// Number of times to re-prompt for a passphrase before giving up on a device. A keyfile is
+/// never retried: if it's wrong once, re-reading the same file won't change that.
+const MAX_PASSPHRASE_ATTEMPTS: u32 = 3;
+
 fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<()> {
     let mut device = CryptInit::init(Path::new(path))?;
     device
         .context_handle()
         .load::<()>(Some(EncryptionFormat::Luks2), None)?;
 
-    let passphrase = match &encrypted_device.unlock {
+    match &encrypted_device.unlock {
         UnlockType::Key(key) => {
-            fs::read(key).with_context(|| format!("unable to read keyfile {:?}", key))?
+            let passphrase =
+                fs::read(key).with_context(|| format!("unable to read keyfile {:?}", key))?;
+            device.activate_handle().activate_by_passphrase(
+                Some(&encrypted_device.name),
+                None,
+                &passphrase,
+                CryptActivate::empty(),
+            )?;
         }
-        UnlockType::AskPassphrase => ask_passphrase_for_device(encrypted_device)?.into_bytes(),
-    };
-
-    device.activate_handle().activate_by_passphrase(
-        Some(&encrypted_device.name),
-        None,
-        &passphrase,
-        CryptActivate::empty(),
-    )?;
+        UnlockType::AskPassphrase => {
+            for attempt in 1..=MAX_PASSPHRASE_ATTEMPTS {
+                let passphrase = ask_passphrase_for_device(encrypted_device)?.into_bytes();
+                match device.activate_handle().activate_by_passphrase(
+                    Some(&encrypted_device.name),
+                    None,
+                    &passphrase,
+                    CryptActivate::empty(),
+                ) {
+                    Ok(_) => break,
+                    Err(err) if attempt < MAX_PASSPHRASE_ATTEMPTS => {
+                        log::warn!(
+                            "wrong passphrase for device {} (attempt {}/{}): {}",
+                            encrypted_device.identifier, attempt, MAX_PASSPHRASE_ATTEMPTS, err
+                        );
+                    }
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "failed to unlock device {} after {} attempts",
+                                encrypted_device.identifier, MAX_PASSPHRASE_ATTEMPTS
+                            )
+                        })
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
