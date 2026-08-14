@@ -12,6 +12,20 @@ pub struct RootDevice {
     pub read_only: bool,
     /// Raw mount options from rootflags=, e.g. ["noatime", "discard"]
     pub mount_options: Vec<String>,
+    /// Set when `rd.live.overlay[=<dir>]` is on the cmdline: the resolved root is mounted
+    /// read-only and used as the lowerdir of an overlayfs, rather than being the final root
+    /// itself. This is the core mechanism behind dracut's dmsquash-live writable overlay.
+    pub overlay: Option<OverlayConfig>,
+}
+
+pub struct OverlayConfig {
+    /// Directory to hold the overlay's upper/work subdirectories. `None` means: mount a fresh
+    /// tmpfs and use that (an ephemeral, boot-to-boot overlay - the common live-boot case).
+    /// `Some(dir)` means: use `<dir>/upper` and `<dir>/work` directly, so changes can persist
+    /// across boots if `dir` is itself on persistent storage. `dir` must already be reachable
+    /// (e.g. on a tmpfs or a filesystem mounted earlier) - resolving it from a separate block
+    /// device (as dracut's rd.live.overlay can) is out of scope.
+    pub persistent_dir: Option<String>,
 }
 
 pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
@@ -38,6 +52,8 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
         .map(|opts| opts.split(',').map(str::to_string).collect())
         .unwrap_or_default();
 
+    let overlay = parse_overlay(cmdline);
+
     let nfsroot = cmdline
         .iter()
         .filter_map(|arg| arg.strip_prefix("nfsroot="))
@@ -60,6 +76,7 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
             devpath: Some(server_path),
             read_only,
             mount_options,
+            overlay,
         });
     }
 
@@ -73,6 +90,7 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
             devpath: Some(devpath),
             read_only,
             mount_options,
+            overlay,
         });
     }
 
@@ -93,6 +111,21 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
         devpath: None,
         read_only,
         mount_options,
+        overlay,
+    })
+}
+
+/// Parses `rd.live.overlay` (ephemeral tmpfs overlay) or `rd.live.overlay=<dir>` (persistent
+/// overlay under `<dir>`) from the cmdline.
+fn parse_overlay(cmdline: &[String]) -> Option<OverlayConfig> {
+    cmdline.iter().rev().find_map(|arg| {
+        if arg == "rd.live.overlay" {
+            Some(OverlayConfig { persistent_dir: None })
+        } else {
+            arg.strip_prefix("rd.live.overlay=").map(|dir| OverlayConfig {
+                persistent_dir: Some(dir.to_string()),
+            })
+        }
     })
 }
 
@@ -250,5 +283,29 @@ mod tests {
         assert_eq!(root.devpath.as_deref(), Some("//192.168.1.1/share"));
         assert!(root.mount_options.contains(&"username=foo".to_string()));
         assert!(root.mount_options.contains(&"password=bar".to_string()));
+    }
+
+    #[test]
+    fn test_no_overlay_by_default() {
+        let cmdline = args("root=/dev/sda1");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(root.overlay.is_none());
+    }
+
+    #[test]
+    fn test_ephemeral_overlay() {
+        let cmdline = args("root=/dev/sda1 rd.live.overlay");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert!(root.overlay.unwrap().persistent_dir.is_none());
+    }
+
+    #[test]
+    fn test_persistent_overlay() {
+        let cmdline = args("root=/dev/sda1 rd.live.overlay=/run/persist");
+        let root = get_root_from_cmdline(&cmdline).unwrap();
+        assert_eq!(
+            root.overlay.unwrap().persistent_dir.as_deref(),
+            Some("/run/persist")
+        );
     }
 }

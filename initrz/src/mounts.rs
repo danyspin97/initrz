@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::CString,
-    fs::File,
+    fs::{self, File},
     os::unix::io::{AsRawFd, RawFd},
     path::Path,
 };
@@ -15,6 +15,10 @@ use crate::loop_device;
 use crate::module_loader::ModuleLoader;
 use crate::root_device::RootDevice;
 use crate::utils::get_blkid_cache;
+
+/// Where the root filesystem is mounted read-only when it's being used as an overlay's lowerdir
+/// rather than as the final root directly.
+const OVERLAY_LOWER_DIR: &str = "/run/rootfs.ro";
 
 pub struct Mounts {
     mountpoints: Vec<(String, Mount)>,
@@ -57,64 +61,61 @@ impl Mounts {
             devpath
         };
         let filesystem = root.filesystem.get_filesystem_string(&devpath)?;
-        if !module_loader.load_module(&filesystem)? {
-            // Do not fail here because the module could be builtin
-            warn!("module {} not found", filesystem);
-        }
-        if filesystem == "btrfs" {
-            register_btrfs_devices();
-        }
-        let filesystem = CString::new(filesystem)?;
 
-        let fs = Fs::open(&filesystem, FsopenFlags::empty()).with_context(|| {
-            format!(
-                "unable to open a filesystem context of type {:?}",
-                &filesystem
-            )
-        })?;
-        let source_str: CString = CString::new("source")?;
-        let devname = CString::new(devpath.clone())?;
-        fs.set_string(&source_str, &devname)
-            .with_context(|| format!("unable to set source {:?} for filesystem", devname))?;
+        let mount = match &root.overlay {
+            None => open_and_mount(
+                module_loader,
+                &filesystem,
+                &devpath,
+                &root.mount_options,
+                root.read_only,
+            )?,
+            Some(overlay) => {
+                // Mount the resolved root read-only as the overlay's lowerdir, then mount an
+                // overlayfs combining it with a writable upperdir/workdir as the actual root.
+                // This is the core mechanism behind dracut's dmsquash-live writable overlay.
+                fs::create_dir_all(OVERLAY_LOWER_DIR)
+                    .with_context(|| format!("unable to create {:?}", OVERLAY_LOWER_DIR))?;
+                let lower_dir = File::open(OVERLAY_LOWER_DIR)
+                    .with_context(|| format!("unable to open {:?}", OVERLAY_LOWER_DIR))?;
+                let lower_mount =
+                    open_and_mount(module_loader, &filesystem, &devpath, &[], true)?;
+                lower_mount
+                    .move_mount(lower_dir.as_raw_fd(), ".", MoveMountFlags::empty())
+                    .with_context(|| format!("unable to mount root at {:?}", OVERLAY_LOWER_DIR))?;
 
-        let mut attr_flags = MountAttrFlags::empty();
-        if root.read_only {
-            attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY;
-        }
-        for option in &root.mount_options {
-            match option.as_str() {
-                "ro" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY,
-                "rw" => attr_flags.remove(MountAttrFlags::MOUNT_ATTR_RDONLY),
-                "noatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOATIME,
-                "nodiratime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODIRATIME,
-                "relatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RELATIME,
-                "strictatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_STRICTATIME,
-                "nosuid" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOSUID,
-                "nodev" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODEV,
-                "noexec" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOEXEC,
-                // Anything else is a filesystem-specific option (e.g. ext4's
-                // "discard" or "data=ordered"); pass it straight to the
-                // filesystem context.
-                _ => match option.split_once('=') {
-                    Some((key, value)) => fs
-                        .set_string(&CString::new(key)?, &CString::new(value)?)
-                        .with_context(|| format!("unable to set mount option {}", option))?,
-                    None => fs
-                        .set_flag(&CString::new(option.as_str())?)
-                        .with_context(|| format!("unable to set mount option {}", option))?,
-                },
+                let (upper_dir, work_dir) = match &overlay.persistent_dir {
+                    Some(dir) => (format!("{}/upper", dir), format!("{}/work", dir)),
+                    None => {
+                        fs::create_dir_all("/run/overlay")
+                            .with_context(|| "unable to create /run/overlay")?;
+                        // Dropping this Mount handle only closes its control fd (see
+                        // mount-api's Drop impl) - it does not unmount; the tmpfs stays attached
+                        // at /run/overlay once move_mount() has placed it there.
+                        mount_special_filesystem(self.root_file.as_raw_fd(), "run/overlay", "tmpfs")
+                            .with_context(|| "unable to mount tmpfs for overlay upper/work dirs")?;
+                        ("/run/overlay/upper".to_string(), "/run/overlay/work".to_string())
+                    }
+                };
+                fs::create_dir_all(&upper_dir)
+                    .with_context(|| format!("unable to create {:?}", upper_dir))?;
+                fs::create_dir_all(&work_dir)
+                    .with_context(|| format!("unable to create {:?}", work_dir))?;
+
+                let overlay_options = vec![
+                    format!("lowerdir={}", OVERLAY_LOWER_DIR),
+                    format!("upperdir={}", upper_dir),
+                    format!("workdir={}", work_dir),
+                ];
+                open_and_mount(
+                    module_loader,
+                    "overlay",
+                    "overlay",
+                    &overlay_options,
+                    root.read_only,
+                )?
             }
-        }
-
-        fs.create().with_context(|| {
-            format!(
-                "unable to create filesystem context of type {:?} for device {:?}",
-                &filesystem, devname
-            )
-        })?;
-        let mount = fs
-            .mount(FsmountFlags::empty(), attr_flags)
-            .with_context(|| format!("unable to mount {:?}", devname))?;
+        };
 
         mount.move_mount(
             self.root_file.as_raw_fd(),
@@ -143,6 +144,72 @@ impl Mounts {
 
         Ok(())
     }
+}
+
+/// Opens a filesystem context of type `fstype`, points it at `source`, applies `options`
+/// (falling back to `read_only` for the ones not explicitly overridden), and mounts it
+/// (unattached - the caller still needs to `move_mount` it somewhere). Shared by the plain
+/// root-mount path and the two-stage overlay path in `mount_root()`.
+fn open_and_mount(
+    module_loader: &ModuleLoader,
+    fstype: &str,
+    source: &str,
+    options: &[String],
+    read_only: bool,
+) -> Result<Mount> {
+    if !module_loader.load_module(fstype)? {
+        // Do not fail here because the module could be builtin
+        warn!("module {} not found", fstype);
+    }
+    if fstype == "btrfs" {
+        register_btrfs_devices();
+    }
+    let fstype = CString::new(fstype)?;
+
+    let fs = Fs::open(&fstype, FsopenFlags::empty())
+        .with_context(|| format!("unable to open a filesystem context of type {:?}", &fstype))?;
+    let source_str: CString = CString::new("source")?;
+    let source_c = CString::new(source)?;
+    fs.set_string(&source_str, &source_c)
+        .with_context(|| format!("unable to set source {:?} for filesystem", source_c))?;
+
+    let mut attr_flags = MountAttrFlags::empty();
+    if read_only {
+        attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY;
+    }
+    for option in options {
+        match option.as_str() {
+            "ro" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RDONLY,
+            "rw" => attr_flags.remove(MountAttrFlags::MOUNT_ATTR_RDONLY),
+            "noatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOATIME,
+            "nodiratime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODIRATIME,
+            "relatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_RELATIME,
+            "strictatime" => attr_flags |= MountAttrFlags::MOUNT_ATTR_STRICTATIME,
+            "nosuid" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOSUID,
+            "nodev" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NODEV,
+            "noexec" => attr_flags |= MountAttrFlags::MOUNT_ATTR_NOEXEC,
+            // Anything else is a filesystem-specific option (e.g. ext4's
+            // "discard" or "data=ordered"); pass it straight to the
+            // filesystem context.
+            _ => match option.split_once('=') {
+                Some((key, value)) => fs
+                    .set_string(&CString::new(key)?, &CString::new(value)?)
+                    .with_context(|| format!("unable to set mount option {}", option))?,
+                None => fs
+                    .set_flag(&CString::new(option.as_str())?)
+                    .with_context(|| format!("unable to set mount option {}", option))?,
+            },
+        }
+    }
+
+    fs.create().with_context(|| {
+        format!(
+            "unable to create filesystem context of type {:?} for source {:?}",
+            &fstype, source_c
+        )
+    })?;
+    fs.mount(FsmountFlags::empty(), attr_flags)
+        .with_context(|| format!("unable to mount {:?}", source_c))
 }
 
 /// Register every currently-known btrfs device with the kernel's multi-device layer, so a
