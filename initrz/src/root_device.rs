@@ -81,7 +81,9 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     }
 
     // CIFS root: root=cifs://<server>/<share>. Credentials/extra options come through the
-    // regular rootflags= mount_options above (e.g. rootflags=username=foo,password=bar).
+    // regular rootflags= mount_options above, either directly (e.g.
+    // rootflags=username=foo,password=bar) or via rootflags=credentials=<file> to avoid putting
+    // a password in plain text on the kernel cmdline - see cifs_credentials.rs.
     if let Some(share) = identifier.strip_prefix("cifs://") {
         let devpath = format!("//{}", share);
         return Ok(RootDevice {

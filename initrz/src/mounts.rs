@@ -164,6 +164,16 @@ fn open_and_mount(
     if fstype == "btrfs" {
         register_btrfs_devices();
     }
+    // The kernel's cifs.ko has no notion of credentials=<file> (only the userspace mount.cifs
+    // tool translates that) - expand it into username=/password=/domain= ourselves so a CIFS
+    // root's password doesn't have to be passed in plain text via rootflags= on the cmdline.
+    let owned_options;
+    let options = if fstype == "cifs" {
+        owned_options = crate::cifs_credentials::resolve(options)?;
+        owned_options.as_slice()
+    } else {
+        options
+    };
     let fstype = CString::new(fstype)?;
 
     let fs = Fs::open(&fstype, FsopenFlags::empty())

@@ -1,4 +1,5 @@
 mod btrfs;
+mod cifs_credentials;
 mod device_handler;
 mod encrypted_device;
 mod encryption_type;
