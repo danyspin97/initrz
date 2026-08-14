@@ -16,8 +16,8 @@ const LOOP_CTL_GET_FREE: libc::c_ulong = 0x4C82;
 /// squashfs root image, as dracut's dmsquash-live module uses) be mounted as if it were a block
 /// device.
 pub fn attach(image_path: &Path) -> Result<PathBuf> {
-    let ctl = File::open("/dev/loop-control")
-        .with_context(|| "unable to open /dev/loop-control")?;
+    let ctl =
+        File::open("/dev/loop-control").with_context(|| "unable to open /dev/loop-control")?;
 
     let index = unsafe { libc::ioctl(ctl.as_raw_fd(), LOOP_CTL_GET_FREE) };
     if index < 0 {

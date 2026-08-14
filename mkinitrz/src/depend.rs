@@ -11,10 +11,10 @@ use object::{
     },
     Endianness, StringTable,
 };
+use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::convert::TryInto;
 
 pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
     let data = fs::read(path)?;
@@ -80,10 +80,9 @@ where
             let dynstr = StringTable::new(data, 0, strsz);
             for offset in offsets {
                 let offset: u64 = offset.try_into()?;
-                let name = dynstr
-                    .get(offset as u32)
-                    .ok()
-                    .with_context(|| format!("DT_NEEDED offset {} out of range in string table", offset))?;
+                let name = dynstr.get(offset as u32).ok().with_context(|| {
+                    format!("DT_NEEDED offset {} out of range in string table", offset)
+                })?;
                 needed.push(OsStr::from_bytes(name).to_os_string());
             }
             break;

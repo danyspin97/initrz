@@ -78,8 +78,7 @@ impl Mounts {
                     .with_context(|| format!("unable to create {:?}", OVERLAY_LOWER_DIR))?;
                 let lower_dir = File::open(OVERLAY_LOWER_DIR)
                     .with_context(|| format!("unable to open {:?}", OVERLAY_LOWER_DIR))?;
-                let lower_mount =
-                    open_and_mount(module_loader, &filesystem, &devpath, &[], true)?;
+                let lower_mount = open_and_mount(module_loader, &filesystem, &devpath, &[], true)?;
                 lower_mount
                     .move_mount(lower_dir.as_raw_fd(), ".", MoveMountFlags::empty())
                     .with_context(|| format!("unable to mount root at {:?}", OVERLAY_LOWER_DIR))?;
@@ -92,9 +91,16 @@ impl Mounts {
                         // Dropping this Mount handle only closes its control fd (see
                         // mount-api's Drop impl) - it does not unmount; the tmpfs stays attached
                         // at /run/overlay once move_mount() has placed it there.
-                        mount_special_filesystem(self.root_file.as_raw_fd(), "run/overlay", "tmpfs")
-                            .with_context(|| "unable to mount tmpfs for overlay upper/work dirs")?;
-                        ("/run/overlay/upper".to_string(), "/run/overlay/work".to_string())
+                        mount_special_filesystem(
+                            self.root_file.as_raw_fd(),
+                            "run/overlay",
+                            "tmpfs",
+                        )
+                        .with_context(|| "unable to mount tmpfs for overlay upper/work dirs")?;
+                        (
+                            "/run/overlay/upper".to_string(),
+                            "/run/overlay/work".to_string(),
+                        )
                     }
                 };
                 fs::create_dir_all(&upper_dir)
@@ -238,7 +244,10 @@ fn register_btrfs_devices() {
         let Some(devname) = devname.to_str() else {
             continue;
         };
-        if device.tag_iter().any(|tag| tag == ("TYPE".to_string(), "btrfs".to_string())) {
+        if device
+            .tag_iter()
+            .any(|tag| tag == ("TYPE".to_string(), "btrfs".to_string()))
+        {
             if let Err(err) = btrfs::scan_device(devname) {
                 warn!("unable to register btrfs device {:?}: {:?}", devname, err);
             }

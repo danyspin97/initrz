@@ -10,7 +10,10 @@ use netlink_packet_core::{
 use netlink_packet_route::{
     address::{AddressAttribute, AddressHeader, AddressMessage, AddressScope},
     link::{LinkFlags, LinkHeader, LinkMessage},
-    route::{RouteAddress, RouteAttribute, RouteHeader, RouteMessage, RouteProtocol, RouteScope, RouteType},
+    route::{
+        RouteAddress, RouteAttribute, RouteHeader, RouteMessage, RouteProtocol, RouteScope,
+        RouteType,
+    },
     AddressFamily, RouteNetlinkMessage,
 };
 use netlink_sys::{protocols::NETLINK_ROUTE, Socket, SocketAddr};
@@ -184,13 +187,19 @@ fn write_resolv_conf(cmdline: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    info!("writing /etc/resolv.conf with nameserver(s) {:?}", nameservers);
+    info!(
+        "writing /etc/resolv.conf with nameserver(s) {:?}",
+        nameservers
+    );
     fs::write("/etc/resolv.conf", format_resolv_conf(&nameservers))
         .with_context(|| "unable to write /etc/resolv.conf")
 }
 
 fn format_resolv_conf(nameservers: &[&str]) -> String {
-    nameservers.iter().map(|ns| format!("nameserver {}\n", ns)).collect()
+    nameservers
+        .iter()
+        .map(|ns| format!("nameserver {}\n", ns))
+        .collect()
 }
 
 fn pick_default_device() -> Result<String> {
@@ -209,7 +218,8 @@ fn pick_default_device() -> Result<String> {
 
 fn get_ifindex(device: &str) -> Result<u32> {
     let path = format!("/sys/class/net/{}/ifindex", device);
-    let content = fs::read_to_string(&path).with_context(|| format!("unable to read {:?}", path))?;
+    let content =
+        fs::read_to_string(&path).with_context(|| format!("unable to read {:?}", path))?;
     content
         .trim()
         .parse()
@@ -318,9 +328,7 @@ mod tests {
 
     #[test]
     fn test_parse_no_gateway_no_device() {
-        let config = parse_ip_param("10.0.0.5:::255.255.0.0")
-            .unwrap()
-            .unwrap();
+        let config = parse_ip_param("10.0.0.5:::255.255.0.0").unwrap().unwrap();
         assert_eq!(config.client_ip, Ipv4Addr::new(10, 0, 0, 5));
         assert_eq!(config.gateway_ip, None);
         assert_eq!(config.prefix_len, 16);

@@ -151,10 +151,14 @@ impl DeviceHandler {
             .get_tag_value("UUID", &PathBuf::from(path))
             .unwrap_or_default();
         // Try path match first, then UUID match
-        if let Some(pos) = self.encrypted_devices.iter().position(|d| match &d.identifier {
-            Identifier::Path(saved_path) => saved_path == path,
-            Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
-        }) {
+        if let Some(pos) = self
+            .encrypted_devices
+            .iter()
+            .position(|d| match &d.identifier {
+                Identifier::Path(saved_path) => saved_path == path,
+                Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
+            })
+        {
             Some(&mut self.encrypted_devices[pos])
         } else {
             None
@@ -253,12 +257,16 @@ impl DeviceHandler {
         for device in get_blkid_cache().iter() {
             let devname = device.devname()?;
             let devname_str = devname.to_str().unwrap();
-            if let Some(pos) = self.encrypted_devices.iter().position(|enc| match &enc.identifier {
-                Identifier::Uuid(uuid) => device
-                    .tag_iter()
-                    .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
-                Identifier::Path(path) => devname_str == path,
-            }) {
+            if let Some(pos) = self
+                .encrypted_devices
+                .iter()
+                .position(|enc| match &enc.identifier {
+                    Identifier::Uuid(uuid) => device
+                        .tag_iter()
+                        .any(|tag| tag == (String::from(UUID_TAG), String::from(uuid))),
+                    Identifier::Path(path) => devname_str == path,
+                })
+            {
                 unlock_luks_device(devname_str, &self.encrypted_devices[pos])?;
                 self.encrypted_devices[pos].unlocked = true;
             }
@@ -357,7 +365,10 @@ fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<
                     Err(err) if attempt < MAX_PASSPHRASE_ATTEMPTS => {
                         log::warn!(
                             "wrong passphrase for device {} (attempt {}/{}): {}",
-                            encrypted_device.identifier, attempt, MAX_PASSPHRASE_ATTEMPTS, err
+                            encrypted_device.identifier,
+                            attempt,
+                            MAX_PASSPHRASE_ATTEMPTS,
+                            err
                         );
                     }
                     Err(err) => {
@@ -447,9 +458,8 @@ mod tests {
 
     #[test]
     fn test_rd_luks_name_override() {
-        let cmdline = make_cmdline(
-            "root=UUID=aaa rd.luks.uuid=dead-beef rd.luks.name=dead-beef:cryptroot",
-        );
+        let cmdline =
+            make_cmdline("root=UUID=aaa rd.luks.uuid=dead-beef rd.luks.name=dead-beef:cryptroot");
         let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
         assert_eq!(handler.encrypted_devices[0].name, "cryptroot");
     }
@@ -458,9 +468,8 @@ mod tests {
     fn test_rd_luks_no_duplicate_with_crypttab() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test/crypttab");
         // crypttab already has luks-home with this UUID; cmdline should not add a duplicate
-        let cmdline = make_cmdline(
-            "root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555",
-        );
+        let cmdline =
+            make_cmdline("root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555");
         let handler = DeviceHandler::init(path, &cmdline).unwrap();
         let count = handler
             .encrypted_devices

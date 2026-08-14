@@ -23,12 +23,7 @@ use rayon::prelude::*;
 use simplelog::{ColorChoice, Config, LevelFilter, TermLogger, TerminalMode};
 
 use std::{
-    env, fs,
-    os::unix::process::CommandExt,
-    path::Path,
-    process::Command,
-    sync::Arc,
-    thread,
+    env, fs, os::unix::process::CommandExt, path::Path, process::Command, sync::Arc, thread,
     time::Duration,
 };
 
@@ -161,7 +156,11 @@ fn initrz() -> Result<()> {
                 }
             };
             if let Err(err) = module_loader.load_modalias(modalias.trim()) {
-                warn!("unable to load module for modalias {:?}: {:?}", modalias.trim(), err);
+                warn!(
+                    "unable to load module for modalias {:?}: {:?}",
+                    modalias.trim(),
+                    err
+                );
             }
         });
 

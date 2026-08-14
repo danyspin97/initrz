@@ -65,7 +65,12 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     if let Some(server_path) = nfs_server_path(identifier, nfsroot)? {
         if let Some(nfsroot) = nfsroot {
             let (_, options) = split_nfsroot(nfsroot);
-            mount_options.extend(options.split(',').filter(|s| !s.is_empty()).map(str::to_string));
+            mount_options.extend(
+                options
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            );
         }
         if !mount_options.iter().any(|opt| opt.starts_with("vers=")) {
             mount_options.push("vers=4.2".to_string());
@@ -122,11 +127,14 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
 fn parse_overlay(cmdline: &[String]) -> Option<OverlayConfig> {
     cmdline.iter().rev().find_map(|arg| {
         if arg == "rd.live.overlay" {
-            Some(OverlayConfig { persistent_dir: None })
-        } else {
-            arg.strip_prefix("rd.live.overlay=").map(|dir| OverlayConfig {
-                persistent_dir: Some(dir.to_string()),
+            Some(OverlayConfig {
+                persistent_dir: None,
             })
+        } else {
+            arg.strip_prefix("rd.live.overlay=")
+                .map(|dir| OverlayConfig {
+                    persistent_dir: Some(dir.to_string()),
+                })
         }
     })
 }
@@ -140,8 +148,7 @@ fn nfs_server_path(identifier: &str, nfsroot: Option<&str>) -> Result<Option<Str
     } else if let Some(rest) = identifier.strip_prefix("nfs:") {
         rest.to_string()
     } else if identifier == "/dev/nfs" {
-        let nfsroot =
-            nfsroot.with_context(|| "root=/dev/nfs requires nfsroot=<server>:<path>")?;
+        let nfsroot = nfsroot.with_context(|| "root=/dev/nfs requires nfsroot=<server>:<path>")?;
         split_nfsroot(nfsroot).0.to_string()
     } else {
         return Ok(None);
@@ -271,7 +278,10 @@ mod tests {
         let cmdline = args("root=nfs:192.168.1.1:/export/root rootflags=vers=4.0");
         let root = get_root_from_cmdline(&cmdline).unwrap();
         assert_eq!(
-            root.mount_options.iter().filter(|o| o.starts_with("vers=")).count(),
+            root.mount_options
+                .iter()
+                .filter(|o| o.starts_with("vers="))
+                .count(),
             1
         );
         assert!(root.mount_options.contains(&"vers=4.0".to_string()));

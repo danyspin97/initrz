@@ -44,10 +44,7 @@ impl clap::ValueEnum for Compression {
 #[derive(Parser)]
 #[clap(version = "0.1", author = "danyspin97")]
 struct Opts {
-    #[clap(
-        long = "config",
-        default_value = "/etc/initrz/mkinitrz.conf"
-    )]
+    #[clap(long = "config", default_value = "/etc/initrz/mkinitrz.conf")]
     config: Utf8PathBuf,
     #[clap(long = "host-only")]
     host: bool,

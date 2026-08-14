@@ -26,7 +26,10 @@ pub fn try_resume(devpath: &str, offset: Option<u64>) -> Result<()> {
 
     if let Some(offset) = offset {
         if let Err(err) = fs::write("/sys/power/resume_offset", offset.to_string()) {
-            warn!("unable to set /sys/power/resume_offset to {}: {}", offset, err);
+            warn!(
+                "unable to set /sys/power/resume_offset to {}: {}",
+                offset, err
+            );
         }
     }
 
