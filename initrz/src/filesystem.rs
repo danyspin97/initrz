@@ -14,6 +14,10 @@ pub enum Filesystem {
     F2fs,
     Vfat,
     Exfat,
+    /// NFSv4 root. NFSv3 is intentionally unsupported: it needs a separate rpcbind/MOUNT-protocol
+    /// RPC client in userspace, whereas NFSv4 talks directly to the server on port 2049 and the
+    /// kernel client handles everything once mount(2) is called with the right options.
+    Nfs4,
 }
 
 impl TryFrom<&str> for Filesystem {
@@ -28,6 +32,7 @@ impl TryFrom<&str> for Filesystem {
             "f2fs" => Filesystem::F2fs,
             "vfat" => Filesystem::Vfat,
             "exfat" => Filesystem::Exfat,
+            "nfs4" => Filesystem::Nfs4,
             _ => bail!("{} is not a supported filesystem", filesystem),
         })
     }
@@ -52,6 +57,7 @@ impl Filesystem {
             Filesystem::F2fs => "f2fs".to_string(),
             Filesystem::Vfat => "vfat".to_string(),
             Filesystem::Exfat => "exfat".to_string(),
+            Filesystem::Nfs4 => "nfs".to_string(),
         })
     }
 }
