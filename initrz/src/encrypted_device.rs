@@ -11,6 +11,7 @@ pub struct EncryptedDevice {
     pub identifier: Identifier,
     pub encryption_type: EncryptionType,
     pub unlock: UnlockType,
+    pub unlocked: bool,
 }
 
 impl EncryptedDevice {
@@ -33,6 +34,7 @@ impl EncryptedDevice {
                 .next()
                 .with_context(|| format!("unable to find name in line:\n{}", line))?
                 .into(),
+            unlocked: false,
         })
     }
 }
