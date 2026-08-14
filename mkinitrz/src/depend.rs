@@ -1,7 +1,7 @@
 // https://github.com/Farenjihn/elusive/blob/151b7e8080b75944327f949cbf2eab25490e5341/src/depend.rs
 
 use anyhow::{bail, Result};
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use log::error;
 use object::{
     elf::{FileHeader32, FileHeader64, DT_NEEDED, DT_STRSZ, DT_STRTAB, PT_DYNAMIC},
@@ -11,15 +11,13 @@ use object::{
     },
     Endianness, StringTable,
 };
-use std::ffi::{CStr, CString, OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
-use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::{convert::TryInto, path::PathBuf};
+use std::convert::TryInto;
 
 pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
     let data = fs::read(path)?;
-
     let kind = FileKind::parse(&*data)?;
 
     let needed = match kind {
@@ -32,33 +30,26 @@ pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
             elf_needed(elf, &data)
         }
         _ => {
-            error!("Failed to parse binary");
-            bail!("only elf files are supported");
+            error!("Failed to parse binary at {}", path);
+            bail!("only ELF files are supported");
         }
     }?;
 
-    // let mut resolved = Vec::new();
-
-    // for lib in &needed {
-    //     walk_linkmap(&lib, &mut resolved)?;
-    // }
-
     Ok(needed
         .into_iter()
-        .map(|s| s.to_str().expect("Failed to parse utf-8").to_string())
+        .map(|s| s.to_str().expect("library name is valid UTF-8").to_string())
         .collect())
 }
 
-fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<OsString>>
+fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<std::ffi::OsString>>
 where
     T: FileHeader<Endian = Endianness>,
 {
     let endian = elf.endian()?;
     let headers = elf.program_headers(endian, data)?;
 
-    let mut strtab = 0;
-    let mut strsz = 0;
-
+    let mut strtab = 0u64;
+    let mut strsz = 0u64;
     let mut offsets = Vec::new();
 
     for header in headers {
@@ -66,7 +57,6 @@ where
             if let Some(dynamic) = header.dynamic(endian, data)? {
                 for entry in dynamic {
                     let d_tag = entry.d_tag(endian).into();
-
                     if d_tag == DT_STRTAB as u64 {
                         strtab = entry.d_val(endian).into();
                     } else if d_tag == DT_STRSZ as u64 {
@@ -84,99 +74,16 @@ where
     for header in headers {
         if let Ok(Some(data)) = header.data_range(endian, data, strtab, strsz) {
             let dynstr = StringTable::new(data, 0, strsz);
-
             for offset in offsets {
-                let offset = offset.try_into()?;
-                let name = dynstr.get(offset).expect("offset exists in string table");
-                let path = OsStr::from_bytes(name).to_os_string();
-
-                needed.push(path);
+                let offset: u64 = offset.try_into()?;
+                let name = dynstr.get(offset as u32).expect("offset exists in string table");
+                needed.push(OsStr::from_bytes(name).to_os_string());
             }
-
             break;
         }
     }
 
     Ok(needed)
-}
-
-#[allow(dead_code)]
-fn walk_linkmap(lib: &OsStr, resolved: &mut Vec<Utf8PathBuf>) -> Result<()> {
-    let name = CString::new(lib.as_bytes())?;
-    let mut linkmap = MaybeUninit::<*mut link_map>::uninit();
-
-    let handle = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY) };
-    if handle.is_null() {
-        let error = unsafe {
-            CStr::from_ptr(libc::dlerror())
-                .to_str()
-                .expect("error should be valid utf8")
-        };
-
-        error!("Failed to open handle to dynamic dependency for {:?}", lib);
-        bail!("dlopen failed: {}", error);
-    }
-
-    let ret = unsafe {
-        libc::dlinfo(
-            handle,
-            libc::RTLD_DI_LINKMAP,
-            linkmap.as_mut_ptr() as *mut libc::c_void,
-        )
-    };
-
-    if ret < 0 {
-        error!("Failed to get path to dynamic dependency for {:?}", lib);
-        bail!("dlinfo failed");
-    }
-
-    let mut names = Vec::new();
-    unsafe {
-        let mut linkmap = linkmap.assume_init();
-
-        // walk back to the beginning of the link map
-        while !(*linkmap).l_prev.is_null() {
-            linkmap = (*linkmap).l_prev as *mut link_map;
-        }
-
-        // skip first entry in linkmap since its name is empty
-        // next entry is also skipped since it is the vDSO
-        linkmap = (*linkmap).l_next as *mut link_map;
-
-        // walk through the link map and add entries
-        while !(*linkmap).l_next.is_null() {
-            linkmap = (*linkmap).l_next as *mut link_map;
-            names.push(CStr::from_ptr((*linkmap).l_name));
-        }
-    };
-
-    for name in names {
-        let path = Utf8PathBuf::from_path_buf(PathBuf::from(OsStr::from_bytes(name.to_bytes())))
-            .map_err(|path| {
-                anyhow::anyhow!("unable to convert path {} to utf8", path.to_string_lossy())
-            })?;
-
-        resolved.push(path);
-    }
-
-    let ret = unsafe { libc::dlclose(handle) };
-    if ret < 0 {
-        error!("Failed to close handle to dynamic dependency for {:?}", lib);
-        bail!("dlclose failed");
-    }
-
-    Ok(())
-}
-
-/// C struct used in `dlinfo` with `RTLD_DI_LINKMAP`
-#[repr(C)]
-#[allow(non_camel_case_types)]
-struct link_map {
-    l_addr: u64,
-    l_name: *mut libc::c_char,
-    l_ld: *mut libc::c_void,
-    l_next: *mut libc::c_void,
-    l_prev: *mut libc::c_void,
 }
 
 #[cfg(test)]
@@ -185,24 +92,15 @@ mod tests {
 
     #[test]
     fn test_resolver() -> Result<()> {
-        let ls = Utf8PathBuf::from("/bin/ls");
-
+        let ls = Utf8Path::new("/bin/ls");
         if ls.exists() {
-            let dependencies = resolve(&ls)?;
-            let mut found_libc = false;
-
-            for lib in dependencies {
-                if lib.starts_with("libc") {
-                    found_libc = true;
-                    break;
-                }
-            }
-
-            if !found_libc {
-                bail!("resolver did not list libc in dependencies")
-            }
+            let deps = resolve(ls)?;
+            assert!(
+                deps.iter().any(|lib| lib.starts_with("libc")),
+                "expected libc in dependencies of /bin/ls, got: {:?}",
+                deps
+            );
         }
-
         Ok(())
     }
 }
