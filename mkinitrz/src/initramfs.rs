@@ -84,7 +84,7 @@ impl Initramfs {
                 .join(modules_alias.strip_prefix(kroot.parent().unwrap()).unwrap()),
         )?;
 
-        initramfs.apply_config(&config);
+        initramfs.apply_config(&config)?;
 
         initramfs_modules::get_modules(initramfs_type.clone(), &kroot, config.modules)?
             .iter()
@@ -134,7 +134,21 @@ impl Initramfs {
         Ok(Initramfs { entries, files })
     }
 
-    fn apply_config(&mut self, _config: &Config) {}
+    fn apply_config(&mut self, config: &Config) -> Result<()> {
+        for bin in &config.binaries {
+            let path = Utf8Path::new(bin);
+            if let Err(e) = self.add_elf(path) {
+                log::warn!("config: skipping binary {}: {}", bin, e);
+            }
+        }
+        for file in &config.files {
+            let path = Utf8Path::new(file);
+            if let Err(e) = self.add_file(path) {
+                log::warn!("config: skipping file {}: {}", file, e);
+            }
+        }
+        Ok(())
+    }
 
     fn add_elf(&mut self, exe: &Utf8Path) -> Result<()> {
         self.add_elf_with_path(exe, exe)
