@@ -1,6 +1,6 @@
 // https://github.com/Farenjihn/elusive/blob/151b7e8080b75944327f949cbf2eab25490e5341/src/depend.rs
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use camino::Utf8Path;
 use log::error;
 use object::{
@@ -35,10 +35,14 @@ pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
         }
     }?;
 
-    Ok(needed
+    needed
         .into_iter()
-        .map(|s| s.to_str().expect("library name is valid UTF-8").to_string())
-        .collect())
+        .map(|s| {
+            s.to_str()
+                .map(str::to_string)
+                .with_context(|| format!("library name {:?} is not valid UTF-8", s))
+        })
+        .collect()
 }
 
 fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<std::ffi::OsString>>
@@ -76,7 +80,10 @@ where
             let dynstr = StringTable::new(data, 0, strsz);
             for offset in offsets {
                 let offset: u64 = offset.try_into()?;
-                let name = dynstr.get(offset as u32).expect("offset exists in string table");
+                let name = dynstr
+                    .get(offset as u32)
+                    .ok()
+                    .with_context(|| format!("DT_NEEDED offset {} out of range in string table", offset))?;
                 needed.push(OsStr::from_bytes(name).to_os_string());
             }
             break;
