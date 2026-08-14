@@ -264,11 +264,12 @@ pub(crate) fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>
         .filter(|line| !line.starts_with('#'))
         .filter(|line| !line.is_empty())
         .map(EncryptedDevice::from_line)
-        .filter_map(|device| {
-            if device.is_err() {
-                log::warn!("failed to parse crypttab line: {:?}", device);
+        .filter_map(|device| match device {
+            Ok(device) => Some(device),
+            Err(err) => {
+                log::warn!("failed to parse crypttab line: {:?}", err);
+                None
             }
-            device.ok()
         })
         .collect())
 }
