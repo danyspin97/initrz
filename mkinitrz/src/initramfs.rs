@@ -13,8 +13,9 @@ use crate::initramfs_modules;
 use crate::initramfs_type::InitramfsType;
 use crate::newc::{Archive, Entry, EntryBuilder};
 
-const ROOT_DIRECTORIES: [&str; 9] = [
+const ROOT_DIRECTORIES: [&str; 10] = [
     "/dev",
+    "/dev/mapper",
     "/etc",
     "/new_root",
     "/proc",
