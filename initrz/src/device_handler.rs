@@ -77,21 +77,27 @@ impl DeviceHandler {
             }
         }
 
-        // resume=<UUID=...|path> selects a device to look for a hibernation
-        // image on; resume_offset=<bytes> is needed for swap-file resume.
-        let resume = cmdline
-            .iter()
-            .filter_map(|arg| arg.strip_prefix("resume="))
-            .last()
-            .map(|identifier| ResumeConfig {
-                identifier: Identifier::from(identifier),
-                offset: cmdline
-                    .iter()
-                    .filter_map(|arg| arg.strip_prefix("resume_offset="))
-                    .filter_map(|val| val.parse::<u64>().ok())
-                    .last(),
-                devpath: None,
-            });
+        // resume=<UUID=...|path> selects a device to look for a hibernation image on;
+        // resume_offset=<bytes> is needed for swap-file resume. noresume disables resume
+        // entirely even if resume= is present, matching the kernel/dracut convention.
+        let noresume = cmdline.iter().any(|arg| arg == "noresume");
+        let resume = if noresume {
+            None
+        } else {
+            cmdline
+                .iter()
+                .filter_map(|arg| arg.strip_prefix("resume="))
+                .last()
+                .map(|identifier| ResumeConfig {
+                    identifier: Identifier::from(identifier),
+                    offset: cmdline
+                        .iter()
+                        .filter_map(|arg| arg.strip_prefix("resume_offset="))
+                        .filter_map(|val| val.parse::<u64>().ok())
+                        .last(),
+                    devpath: None,
+                })
+        };
 
         Ok(DeviceHandler {
             root: get_root_from_cmdline(cmdline)?,
@@ -488,6 +494,13 @@ mod tests {
     #[test]
     fn test_no_resume_by_default() {
         let cmdline = make_cmdline("root=UUID=aaa");
+        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        assert!(handler.resume.is_none());
+    }
+
+    #[test]
+    fn test_noresume_disables_resume() {
+        let cmdline = make_cmdline("root=UUID=aaa resume=UUID=deadbeef-0000 noresume");
         let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
         assert!(handler.resume.is_none());
     }
