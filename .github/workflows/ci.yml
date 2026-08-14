@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: fmt, clippy, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libcryptsetup-dev libblkid-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  qemu-boot:
+    name: QEMU boot test
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcryptsetup-dev libblkid-dev \
+            qemu-system-x86 busybox-static lvm2 e2fsprogs
+          # Best-effort: the hosted runner's own kernel modules should already be present
+          # (it booted with them), but install the matching package too in case the image
+          # trimmed anything mkinitrz needs (e.g. ext4.ko, virtio_blk.ko).
+          sudo apt-get install -y --no-install-recommends "linux-modules-$(uname -r)" || true
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p initrz -p mkinitrz
+
+      - name: Boot initrz under QEMU
+        run: ./.github/scripts/qemu-boot-test.sh
