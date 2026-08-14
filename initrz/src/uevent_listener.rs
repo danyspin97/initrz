@@ -26,17 +26,11 @@ pub struct UeventListener {
 impl UeventListener {
     pub fn init(module_loader: Arc<ModuleLoader>) -> Result<UeventListener> {
         let mut socket = Socket::new(NETLINK_KOBJECT_UEVENT)
-            .with_context(|| "unable to create socket".to_string())?;
-        // socket
-        //     .set_non_blocking(true)
-        //     .with_context(|| format!("unable to set O_NONBLOCK to socket"))?;
+            .with_context(|| "unable to create netlink uevent socket")?;
         let kernel_addr = SocketAddr::new(0, 1);
-        // socket
-        //     .connect(&kernel_addr)
-        //     .with_context(|| format!("unable to connect to kernel address"))?;
         socket
             .bind(&kernel_addr)
-            .with_context(|| "unable to bind socket".to_string())?;
+            .with_context(|| "unable to bind netlink socket to kernel address")?;
 
         Ok(UeventListener {
             socket,
@@ -45,122 +39,113 @@ impl UeventListener {
     }
 
     pub fn listen(&self, device_tx: Sender<String>) {
+        let mut buf = vec![0u8; 4096];
         loop {
-            let mut buf = vec![0; 4096];
-            let msg = self.socket.recv(&mut buf, 0);
-            if msg.is_err() {
-                // warn!("unable to receive from socket");
-                continue;
-            }
-            let msglen = msg.unwrap();
-            if msglen == 0 {
-                // received empty message
-                continue;
-            }
-            let uevent = parse_uevent(&buf[0..msglen - 1]);
-            if uevent.is_err() {
-                warn!("uevent: {:?}", uevent);
-                continue;
-            }
+            let msglen = match self.socket.recv(&mut buf, 0) {
+                Ok(n) if n == 0 => continue,
+                Ok(n) => n,
+                Err(e) => {
+                    warn!("uevent socket recv error: {}", e);
+                    continue;
+                }
+            };
 
-            let uevent = uevent.unwrap();
-            let res = self.get_device_path(uevent);
-            if let Ok(path) = res {
-                if let Some(path) = path {
-                    if let Err(err) = device_tx.send(path) {
-                        warn!("send error: {:?}", err);
+            let uevent = match parse_uevent(&buf[..msglen]) {
+                Ok(u) => u,
+                Err(e) => {
+                    warn!("failed to parse uevent: {:?}", e);
+                    continue;
+                }
+            };
+
+            match self.get_device_path(uevent) {
+                Ok(Some(path)) => {
+                    if device_tx.send(path).is_err() {
+                        // Receiver dropped; main thread found root, exit cleanly
                         break;
                     }
                 }
-            } else {
-                warn!("uevent: {:?}", res);
+                Ok(None) => {}
+                Err(e) => warn!("uevent device path error: {:?}", e),
             }
         }
     }
 
     fn get_device_path(&self, uevent: Uevent) -> Result<Option<String>> {
-        let modalias = uevent.vars.get("MODALIAS");
-        if modalias.is_some() {
-            self.module_loader.load_modalias(modalias.unwrap())?;
+        if let Some(modalias) = uevent.vars.get("MODALIAS") {
+            self.module_loader.load_modalias(modalias)?;
         }
 
         let devpath = uevent
             .vars
             .get("DEVPATH")
-            .with_context(|| "unable to find DEVPATH in uevent")?;
+            .with_context(|| "missing DEVPATH in uevent")?;
         let devname = Path::new(devpath)
             .file_name()
             .with_context(|| format!("unable to get filename from DEVPATH {}", devpath))?
             .to_str()
-            .with_context(|| "unable to convert OsString to String")?;
+            .with_context(|| "DEVPATH filename is not valid UTF-8")?;
         let action = uevent
             .vars
             .get("ACTION")
-            .with_context(|| "unable to find ACTION in uevent")?;
-
+            .with_context(|| "missing ACTION in uevent")?;
         let subsystem = uevent
             .vars
             .get("SUBSYSTEM")
-            .with_context(|| "unable to find SUBSYSTEM in uevent")?;
-
-        // (
-        //     devname is not dm-* and action is add
-        // ||
-        //     is devname is dm-* and action is change
-        // )
-        // and
-        // subsytem is block
+            .with_context(|| "missing SUBSYSTEM in uevent")?;
 
         if subsystem != "block" {
             return Ok(None);
         }
 
+        // dm-* devices trigger on "change", regular block devices on "add"
         if devname.starts_with("dm-") && action != "change" {
             return Ok(None);
         }
-
         if !devname.starts_with("dm-") && action != "add" {
             return Ok(None);
         }
 
-        Ok(Some(
-            if devname.starts_with("dm-") {
-                let dm_name = Path::new("/sys").join(devname).join("dm/name");
-                if !dm_name.exists() {
-                    bail!("unable to find file {:?}", dm_name);
-                }
-                let dm_name = String::from_utf8(fs::read(dm_name)?)?;
-                Path::new("/dev/mapper").join(dm_name)
-            } else {
-                Path::new("/dev").join(devname)
-            }
-            .to_string_lossy()
-            .to_string(),
-        ))
+        let path = if devname.starts_with("dm-") {
+            let dm_name_path = Path::new("/sys/block").join(devname).join("dm/name");
+            let dm_name = fs::read_to_string(&dm_name_path)
+                .with_context(|| format!("unable to read {:?}", dm_name_path))?;
+            Path::new("/dev/mapper").join(dm_name.trim())
+        } else {
+            Path::new("/dev").join(devname)
+        };
+
+        Ok(Some(path.to_string_lossy().into_owned()))
     }
 }
 
 pub fn parse_uevent(buf: &[u8]) -> Result<Uevent> {
-    let mut lines = buf.split(|c| c == &0);
+    // Strip trailing null byte if present
+    let buf = buf.strip_suffix(&[0]).unwrap_or(buf);
+    let mut lines = buf.split(|c| *c == 0);
 
-    let name = lines
+    let name_bytes = lines
         .next()
-        .with_context(|| "uncorrect uevent received".to_string())?;
-    name.find_char('@')
-        .with_context(|| "uncorrect uevent received".to_string())?;
+        .with_context(|| "empty uevent buffer")?;
+    name_bytes
+        .find_char('@')
+        .with_context(|| "uevent header missing '@' separator")?;
 
-    let vars: HashMap<_, _> = lines
-        .map(parse_line)
-        .filter_map(|res| {
-            if res.is_err() {
-                warn!("unable to process line\n{:?}", res);
+    let vars = lines
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            match parse_line(line) {
+                Ok(kv) => Some(kv),
+                Err(e) => {
+                    warn!("unable to parse uevent line: {:?}", e);
+                    None
+                }
             }
-            res.ok()
         })
         .collect();
 
     Ok(Uevent {
-        name: CString::new(name)?.into_string()?,
+        name: CString::new(name_bytes)?.into_string()?,
         vars,
     })
 }
@@ -168,12 +153,45 @@ pub fn parse_uevent(buf: &[u8]) -> Result<Uevent> {
 pub fn parse_line(line: &[u8]) -> Result<(String, String)> {
     let token_index = line.find_char('=').with_context(|| {
         format!(
-            "unable to locate '=' in line '{}'",
+            "missing '=' in uevent line '{}'",
             String::from_utf8_lossy(line)
         )
     })?;
     Ok((
-        CString::new(&line[0..token_index])?.into_string()?,
+        CString::new(&line[..token_index])?.into_string()?,
         CString::new(&line[token_index + 1..])?.into_string()?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_uevent_add() {
+        let buf = b"add@/devices/pci0000:00/sda\0ACTION=add\0SUBSYSTEM=block\0DEVPATH=/devices/pci0000:00/sda\0";
+        let uevent = parse_uevent(buf).unwrap();
+        assert_eq!(uevent.vars["ACTION"], "add");
+        assert_eq!(uevent.vars["SUBSYSTEM"], "block");
+    }
+
+    #[test]
+    fn test_parse_line() {
+        let line = b"ACTION=add";
+        let (key, val) = parse_line(line).unwrap();
+        assert_eq!(key, "ACTION");
+        assert_eq!(val, "add");
+    }
+
+    #[test]
+    fn test_parse_line_missing_equals() {
+        let line = b"NOEQUALSSIGN";
+        assert!(parse_line(line).is_err());
+    }
+
+    #[test]
+    fn test_parse_uevent_missing_at() {
+        let buf = b"invalid_header\0ACTION=add\0";
+        assert!(parse_uevent(buf).is_err());
+    }
 }
