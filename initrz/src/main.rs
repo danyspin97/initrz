@@ -63,19 +63,52 @@ pub fn parse_cmdline() -> Result<Vec<String>> {
         .collect())
 }
 
+/// Maps a kernel syslog-style loglevel (0=emerg..7=debug) to a log crate LevelFilter.
+fn syslog_level_to_filter(level: u8) -> LevelFilter {
+    match level {
+        0..=3 => LevelFilter::Error,
+        4 => LevelFilter::Warn,
+        5..=6 => LevelFilter::Info,
+        _ => LevelFilter::Trace,
+    }
+}
+
+/// Picks initrz's own log verbosity from `quiet`, `rd.debug`, and `loglevel=N` cmdline
+/// parameters. The last one of these to appear wins, matching how other cmdline flags in this
+/// codebase are resolved (e.g. the last of ro/rw). Defaults to Trace, matching the prior
+/// unconditional behavior, when none of these are present.
+fn log_level_from_cmdline(cmdline: &[String]) -> LevelFilter {
+    cmdline
+        .iter()
+        .filter_map(|arg| {
+            if arg == "quiet" {
+                Some(LevelFilter::Warn)
+            } else if arg == "rd.debug" {
+                Some(LevelFilter::Trace)
+            } else {
+                arg.strip_prefix("loglevel=")
+                    .and_then(|v| v.parse::<u8>().ok())
+                    .map(syslog_level_to_filter)
+            }
+        })
+        .last()
+        .unwrap_or(LevelFilter::Trace)
+}
+
 fn initrz() -> Result<()> {
+    // /proc must be mounted before /proc/cmdline can be read, so the logger (whose level depends
+    // on the cmdline) can only be set up after this - any log calls before this point are lost.
+    let mounts = Arc::new(Mounts::with_default_mounts()?);
+    let cmdline = parse_cmdline()?;
+
     TermLogger::init(
-        LevelFilter::Trace,
+        log_level_from_cmdline(&cmdline),
         Config::default(),
         TerminalMode::Mixed,
         ColorChoice::Auto,
     )?;
 
-    info!("mounting special filesystems");
-    let mounts = Arc::new(Mounts::with_default_mounts()?);
-
-    info!("parsing command line");
-    let cmdline = parse_cmdline()?;
+    info!("mounted special filesystems and parsed command line");
 
     info!("configuring network");
     network::configure_from_cmdline(&cmdline)?;
@@ -232,5 +265,53 @@ mod tests {
             let args = parse_cmdline().unwrap();
             assert!(!args.is_empty());
         }
+    }
+
+    fn make_cmdline(s: &str) -> Vec<String> {
+        s.split_whitespace().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn test_log_level_default_is_trace() {
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1")),
+            LevelFilter::Trace
+        );
+    }
+
+    #[test]
+    fn test_log_level_quiet() {
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1 quiet")),
+            LevelFilter::Warn
+        );
+    }
+
+    #[test]
+    fn test_log_level_rd_debug() {
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1 quiet rd.debug")),
+            LevelFilter::Trace
+        );
+    }
+
+    #[test]
+    fn test_log_level_loglevel_param() {
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1 loglevel=4")),
+            LevelFilter::Warn
+        );
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1 loglevel=7")),
+            LevelFilter::Trace
+        );
+    }
+
+    #[test]
+    fn test_log_level_last_flag_wins() {
+        assert_eq!(
+            log_level_from_cmdline(&make_cmdline("root=/dev/sda1 loglevel=7 quiet")),
+            LevelFilter::Warn
+        );
     }
 }
