@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::depend;
 use crate::initramfs_modules;
 use crate::initramfs_type::InitramfsType;
+use crate::ldconf;
 use crate::newc::{Archive, Entry, EntryBuilder};
 
 const ROOT_DIRECTORIES: [&str; 10] = [
@@ -167,12 +168,18 @@ impl Initramfs {
     }
 
     fn add_library(&mut self, lib: &str) -> Result<()> {
-        const PATHS: [&str; 5] = ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/local/lib"];
+        // Fallback paths for systems without a usable /etc/ld.so.conf (or where it doesn't list
+        // the standard directories, since ldconfig adds those implicitly). ld.so.conf's own
+        // paths - which cover distro-specific layouts like Debian's multiarch
+        // /usr/lib/x86_64-linux-gnu - are tried first.
+        const FALLBACK_PATHS: [&str; 5] =
+            ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/local/lib"];
 
-        let full_path = PATHS
-            .iter()
+        let full_path = ldconf::search_paths()
+            .into_iter()
+            .chain(FALLBACK_PATHS.iter().map(Utf8PathBuf::from))
             .find_map(|path| {
-                let path = Utf8Path::new(path).join(lib);
+                let path = path.join(lib);
                 if path.exists() {
                     Some(path)
                 } else {

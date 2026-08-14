@@ -3,6 +3,7 @@ mod depend;
 mod initramfs;
 mod initramfs_modules;
 mod initramfs_type;
+mod ldconf;
 mod newc;
 
 use std::{

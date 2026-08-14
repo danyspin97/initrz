@@ -12,6 +12,7 @@ camino = "1.1.6"
 clap = { version = "4.4.7", features = ["derive", "wrap_help"]}
 colored = "2.0.4"
 dowser = "0.8.1"
+glob = "0.3.1"
 libc = "0.2.150"
 log = "0.4.20"
 rayon = "1.8.0"
