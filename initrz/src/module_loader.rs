@@ -92,7 +92,10 @@ pub fn parse_module_alias(filename: &Path) -> Result<Vec<ModAlias>> {
     Ok(lines
         .map_while(Result::ok)
         .map(|line| -> Result<ModAlias> {
-            let mut split = line[6..].splitn(2, ' ');
+            let rest = line
+                .strip_prefix("alias ")
+                .with_context(|| format!("line does not start with 'alias ': {:?}", line))?;
+            let mut split = rest.splitn(2, ' ');
             Ok(ModAlias {
                 pattern: Pattern::new(split.next().with_context(|| "no pattern found")?)?,
                 module: split
@@ -250,5 +253,15 @@ mod tests {
             assert_eq!(module.filename, expected_module.filename);
             assert_eq!(module.deps, expected_module.deps);
         }
+    }
+
+    #[test]
+    fn parse_module_alias_skips_malformed_lines_without_panicking() {
+        let filename = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/test/modules.alias"));
+        let aliases = parse_module_alias(filename).unwrap();
+
+        assert_eq!(aliases.len(), 2);
+        assert_eq!(aliases[0].module, "e1000e");
+        assert_eq!(aliases[1].module, "usbmod");
     }
 }

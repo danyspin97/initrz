@@ -1,0 +1,4 @@
+alias pci:v00008086d*sv*sd*bc*sc*i* e1000e
+bad
+alias usb:v1234p5678* usbmod
+#a comment
