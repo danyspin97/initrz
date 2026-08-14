@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use file_format::FileFormat;
-use glob::{glob, Pattern};
+use glob::Pattern;
 use log::{debug, warn};
 use nix::kmod::init_module;
 use xz2::bufread::XzDecoder;
@@ -116,13 +116,11 @@ pub fn parse_module_alias(filename: &Path) -> Result<Vec<ModAlias>> {
 impl ModuleLoader {
     pub fn init(kernel_version: &str) -> Result<ModuleLoader> {
         let kernel_root = Path::new("/lib/modules").join(kernel_version);
-        let mut modules = HashSet::new();
 
-        modules.reserve(glob(&kernel_root.join("*.ko.{xz,zst}").as_os_str().to_string_lossy())?.count());
         Ok(ModuleLoader {
             modules: parse_module_dep(&kernel_root.join("modules.dep"))?,
             aliases: parse_module_alias(&kernel_root.join("modules.alias"))?,
-            modules_loaded: RwLock::new(modules),
+            modules_loaded: RwLock::new(HashSet::new()),
             kernel_root,
         })
     }
