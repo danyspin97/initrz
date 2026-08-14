@@ -163,9 +163,35 @@ async fn run_rescue_shell() -> Result<()> {
         .with_context(|| "rescue shell exited with an error")
 }
 
+// initrz runs as PID 1 inside the initramfs: an uncaught panic would unwind straight out of
+// main() and exit the process, which the kernel treats as "init died" and panics on. Catching it
+// here lets us fall back to the rescue shell just like a normal Err from initrz() would.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
 fn main() {
-    if let Err(err) = initrz() {
-        error!("{:?}", err);
+    let needs_rescue = match std::panic::catch_unwind(initrz) {
+        Ok(Ok(())) => false,
+        Ok(Err(err)) => {
+            error!("{:?}", err);
+            true
+        }
+        Err(panic) => {
+            // The logger may not have been initialized yet if the panic happened early, so
+            // eprintln! is the only guaranteed way to surface this.
+            eprintln!("initrz panicked: {}", panic_message(&*panic));
+            true
+        }
+    };
+
+    if needs_rescue {
         info!("entering rescue shell");
 
         let rescue_result = tokio::runtime::Builder::new_multi_thread()
