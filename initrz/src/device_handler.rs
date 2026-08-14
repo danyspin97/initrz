@@ -216,6 +216,16 @@ impl DeviceHandler {
     }
 
     pub fn search_root(&mut self) -> Result<bool> {
+        // A root= pointing directly at a regular file (e.g. a squashfs image baked into the
+        // initramfs) is available immediately: it isn't a block device, so no uevent will ever
+        // announce it, and blkid can't be used to resolve it either.
+        if let Identifier::Path(path) = &self.root.identifier {
+            if Path::new(path).is_file() {
+                self.root.devpath = Some(path.clone());
+                return Ok(true);
+            }
+        }
+
         for device in get_blkid_cache().iter() {
             let devname = device.devname()?;
             let root_identifier = &self.root.identifier;

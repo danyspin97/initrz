@@ -3,6 +3,7 @@ use std::{
     ffi::CString,
     fs::File,
     os::unix::io::{AsRawFd, RawFd},
+    path::Path,
 };
 
 use anyhow::{Context, Result};
@@ -10,6 +11,7 @@ use log::warn;
 use mount_api::{Fs, FsmountFlags, FsopenFlags, Mount, MountAttrFlags, MoveMountFlags};
 
 use crate::btrfs;
+use crate::loop_device;
 use crate::module_loader::ModuleLoader;
 use crate::root_device::RootDevice;
 use crate::utils::get_blkid_cache;
@@ -42,6 +44,18 @@ impl Mounts {
         module_loader.load_module("crc32c_generic")?;
 
         let devpath = root.devpath.unwrap();
+        // If root resolved to a plain image file (e.g. a squashfs image, as with dracut's
+        // dmsquash-live) rather than a block device, loop-attach it first so the rest of the
+        // mount path can treat it exactly like any other block device.
+        let devpath = if Path::new(&devpath).is_file() {
+            loop_device::attach(Path::new(&devpath))
+                .with_context(|| format!("unable to loop-attach root image {:?}", devpath))?
+                .to_str()
+                .with_context(|| "loop device path is not valid UTF-8")?
+                .to_string()
+        } else {
+            devpath
+        };
         let filesystem = root.filesystem.get_filesystem_string(&devpath)?;
         if !module_loader.load_module(&filesystem)? {
             // Do not fail here because the module could be builtin

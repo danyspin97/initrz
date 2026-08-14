@@ -4,6 +4,7 @@ mod encrypted_device;
 mod encryption_type;
 mod filesystem;
 mod identifier;
+mod loop_device;
 mod module_loader;
 mod mounts;
 mod resume;
