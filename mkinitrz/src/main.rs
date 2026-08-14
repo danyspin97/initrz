@@ -8,7 +8,6 @@ mod newc;
 use std::{
     fs::{self, File},
     io::{BufWriter, Write},
-    path::Path,
 };
 
 use anyhow::{ensure, Context, Result};
