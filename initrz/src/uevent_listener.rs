@@ -39,8 +39,15 @@ impl UeventListener {
     }
 
     pub fn listen(&self, device_tx: Sender<String>) {
-        let mut buf = vec![0u8; 4096];
+        // `Socket::recv` takes a `bytes::BufMut` and writes into its *spare capacity past the
+        // current length* (then grows the length to cover what was written) - it does not fill
+        // the buffer from index 0. A fixed-size `vec![0u8; 4096]` already has len == capacity, so
+        // each call would reallocate and write past index 4096, leaving `buf[..msglen]` as the
+        // untouched zeroed prefix. Clearing (not resizing) `buf` before each recv keeps its
+        // capacity but resets len to 0, so the received bytes land at `buf[..msglen]` as expected.
+        let mut buf = Vec::with_capacity(4096);
         loop {
+            buf.clear();
             let msglen = match self.socket.recv(&mut buf, 0) {
                 Ok(n) if n == 0 => continue,
                 Ok(n) => n,
@@ -124,22 +131,18 @@ pub fn parse_uevent(buf: &[u8]) -> Result<Uevent> {
     let buf = buf.strip_suffix(&[0]).unwrap_or(buf);
     let mut lines = buf.split(|c| *c == 0);
 
-    let name_bytes = lines
-        .next()
-        .with_context(|| "empty uevent buffer")?;
+    let name_bytes = lines.next().with_context(|| "empty uevent buffer")?;
     name_bytes
         .find_char('@')
         .with_context(|| "uevent header missing '@' separator")?;
 
     let vars = lines
         .filter(|line| !line.is_empty())
-        .filter_map(|line| {
-            match parse_line(line) {
-                Ok(kv) => Some(kv),
-                Err(e) => {
-                    warn!("unable to parse uevent line: {:?}", e);
-                    None
-                }
+        .filter_map(|line| match parse_line(line) {
+            Ok(kv) => Some(kv),
+            Err(e) => {
+                warn!("unable to parse uevent line: {:?}", e);
+                None
             }
         })
         .collect();
