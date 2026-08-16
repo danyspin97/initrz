@@ -62,3 +62,6 @@ jobs:
 
       - name: Boot initrz under QEMU
         run: ./.github/scripts/qemu-boot-test.sh
+
+      - name: Boot initrz under QEMU (LVM root)
+        run: ./.github/scripts/qemu-boot-test-lvm.sh
