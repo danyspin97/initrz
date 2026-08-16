@@ -1,11 +1,13 @@
 mod btrfs;
 mod cifs_credentials;
 mod device_handler;
+mod device_mapper;
 mod encrypted_device;
 mod encryption_type;
 mod filesystem;
 mod identifier;
 mod loop_device;
+mod lvm;
 mod module_loader;
 mod mounts;
 mod network;

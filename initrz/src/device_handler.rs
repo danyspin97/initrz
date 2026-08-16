@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use libcryptsetup_rs::consts::flags::CryptActivate;
 use libcryptsetup_rs::consts::vals::EncryptionFormat;
 use libcryptsetup_rs::CryptInit;
@@ -6,7 +6,6 @@ use libcryptsetup_rs::CryptInit;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::Duration;
 
@@ -303,27 +302,12 @@ impl DeviceHandler {
             return Ok(());
         }
         let filesystem = filesystem.unwrap();
-        if filesystem == "lvm" {
-            let output = Command::new("/bin/vgchange")
-                .arg("-ay")
-                .output()
-                .with_context(|| "unable to run vgchange command")?;
-            if !output.status.success() {
-                bail!(
-                    "vgchange command failed:\n{:?}",
-                    String::from_utf8(output.stderr)
-                )
-            }
-
-            let output = Command::new("/bin/vgmknodes")
-                .output()
-                .with_context(|| "unable to run vgmknodes command")?;
-            if !output.status.success() {
-                bail!(
-                    "vgmknodes command failed:\n{:?}",
-                    String::from_utf8(output.stderr)
-                )
-            }
+        // blkid reports LVM physical volumes as "LVM2_member" (matching `blkid`/`lsblk -f`
+        // output), never "lvm" - this comparison predates lvm.rs and never actually matched
+        // anything on a real system.
+        if filesystem == "LVM2_member" {
+            crate::lvm::activate_volume_group(path)
+                .with_context(|| format!("activating volume group on {:?}", path))?;
         }
 
         blkid_cache.put_cache();
