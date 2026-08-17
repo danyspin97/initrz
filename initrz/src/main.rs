@@ -33,7 +33,6 @@ use device_handler::DeviceHandler;
 use module_loader::ModuleLoader;
 use mounts::Mounts;
 use uevent_listener::UeventListener;
-use utils::get_blkid_cache;
 
 // Copyright (c) 2015 Guillaume Gomez
 // https://github.com/GuillaumeGomez/sysinfo/blob/master/src/linux/system.rs#L524
@@ -118,11 +117,10 @@ fn initrz() -> Result<()> {
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
     info!("probing available devices");
-    let mut cache = get_blkid_cache()?;
-    cache.probe_all()?;
-    cache.probe_all_removable()?;
-    cache.put_cache();
-    std::mem::drop(cache);
+    // Must run on device_handler's own cached blkid handle, not a separate one: libblkid's cache
+    // is populated in-memory per-handle, so probing a throwaway handle here would leave
+    // device_handler's handle (used by every lookup below) permanently empty.
+    device_handler.probe_all()?;
 
     info!("unlocking available encrypted devices");
     device_handler.unlock_available_devices()?;

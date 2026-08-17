@@ -130,6 +130,20 @@ impl DeviceHandler {
         })
     }
 
+    /// Probe every currently-attached block device and persist the results to the on-disk cache
+    /// file. Must be called (on `self.blkid_cache`, not a separate handle) before
+    /// `unlock_available_devices`/`search_resume`/`search_root` can see anything: libblkid's
+    /// cache is populated purely in-memory at the point `probe_all`/`probe_all_new` is called on
+    /// a given handle - opening a *different* handle and probing that one (even if it writes the
+    /// same cache file afterwards) leaves this handle's device list empty, since `BlkidCache`
+    /// doesn't re-read the file on every `iter()` call.
+    pub fn probe_all(&mut self) -> Result<()> {
+        self.blkid_cache.probe_all()?;
+        self.blkid_cache.probe_all_removable()?;
+        self.blkid_cache.put_cache();
+        Ok(())
+    }
+
     fn is_ready(&self) -> bool {
         let all_unlocked = self.encrypted_devices.iter().all(|d| d.unlocked);
         let resume_ready = self.resume.as_ref().is_none_or(|r| r.devpath.is_some());
