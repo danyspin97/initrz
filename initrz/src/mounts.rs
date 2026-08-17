@@ -78,7 +78,16 @@ impl Mounts {
                     .with_context(|| format!("unable to create {:?}", OVERLAY_LOWER_DIR))?;
                 let lower_dir = File::open(OVERLAY_LOWER_DIR)
                     .with_context(|| format!("unable to open {:?}", OVERLAY_LOWER_DIR))?;
-                let lower_mount = open_and_mount(module_loader, &filesystem, &devpath, &[], true)?;
+                // rootflags= (root.mount_options) must still reach the lowerdir mount here - it's
+                // the actual mount of the resolved root device, just read-only and relocated
+                // under the overlay instead of becoming the final root directly.
+                let lower_mount = open_and_mount(
+                    module_loader,
+                    &filesystem,
+                    &devpath,
+                    &root.mount_options,
+                    true,
+                )?;
                 lower_mount
                     .move_mount(lower_dir.as_raw_fd(), ".", MoveMountFlags::empty())
                     .with_context(|| format!("unable to mount root at {:?}", OVERLAY_LOWER_DIR))?;
