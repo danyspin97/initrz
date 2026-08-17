@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use libblkid_rs::BlkidCache;
 use libcryptsetup_rs::consts::flags::CryptActivate;
 use libcryptsetup_rs::consts::vals::EncryptionFormat;
 use libcryptsetup_rs::CryptInit;
@@ -32,6 +33,10 @@ pub struct DeviceHandler {
     resume: Option<ResumeConfig>,
     pub(crate) encrypted_devices: Vec<EncryptedDevice>,
     module_loader: Arc<ModuleLoader>,
+    // Held open for the handler's whole lifetime instead of being reopened (and the on-disk
+    // cache file re-parsed) on every lookup: DeviceHandler's methods run repeatedly on the
+    // boot-critical path (once per uevent), so that cost would otherwise be paid over and over.
+    blkid_cache: BlkidCache,
 }
 
 /// dm-crypt (LUKS) and device-mapper LVM activation both need the dm_mod module, but neither
@@ -122,6 +127,7 @@ impl DeviceHandler {
             resume,
             encrypted_devices,
             module_loader,
+            blkid_cache: get_blkid_cache()?,
         })
     }
 
@@ -171,8 +177,8 @@ impl DeviceHandler {
     }
 
     fn get_encrypted_device_mut(&mut self, path: &str) -> Option<&mut EncryptedDevice> {
-        let blkid_cache = get_blkid_cache().ok()?;
-        let uuid = blkid_cache
+        let uuid = self
+            .blkid_cache
             .get_tag_value("UUID", &PathBuf::from(path))
             .unwrap_or_default();
         // Try path match first, then UUID match
@@ -222,7 +228,7 @@ impl DeviceHandler {
         };
 
         let mut found = None;
-        for device in get_blkid_cache()?.iter() {
+        for device in self.blkid_cache.iter() {
             let devname = device.devname()?;
             let matched = match identifier {
                 Identifier::Uuid(uuid) => device
@@ -261,7 +267,7 @@ impl DeviceHandler {
             }
         }
 
-        for device in get_blkid_cache()?.iter() {
+        for device in self.blkid_cache.iter() {
             let devname = device.devname()?;
             let root_identifier = &self.root.identifier;
             if match root_identifier {
@@ -279,7 +285,7 @@ impl DeviceHandler {
     }
 
     pub fn unlock_available_devices(&mut self) -> Result<()> {
-        for device in get_blkid_cache()?.iter() {
+        for device in self.blkid_cache.iter() {
             let devname = device.devname()?;
             let devname_str = devname.to_str().unwrap();
             if let Some(pos) = self
@@ -322,10 +328,9 @@ impl DeviceHandler {
             return Ok(());
         }
 
-        let mut blkid_cache = get_blkid_cache()?;
-        blkid_cache.probe_all_new()?;
+        self.blkid_cache.probe_all_new()?;
 
-        let filesystem = blkid_cache.get_tag_value("TYPE", &PathBuf::from(path));
+        let filesystem = self.blkid_cache.get_tag_value("TYPE", &PathBuf::from(path));
         if filesystem.is_err() {
             // We have got a block device with no filesystem, skip
             return Ok(());
@@ -340,7 +345,7 @@ impl DeviceHandler {
                 .with_context(|| format!("activating volume group on {:?}", path))?;
         }
 
-        blkid_cache.put_cache();
+        self.blkid_cache.put_cache();
         Ok(())
     }
 }
