@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use libblkid_rs::BlkidCache;
 use libcryptsetup_rs::consts::flags::CryptActivate;
-use libcryptsetup_rs::consts::vals::EncryptionFormat;
 use libcryptsetup_rs::CryptInit;
 
 use std::fs::{self, File};
@@ -356,9 +355,11 @@ const MAX_PASSPHRASE_ATTEMPTS: u32 = 3;
 
 fn unlock_luks_device(path: &str, encrypted_device: &EncryptedDevice) -> Result<()> {
     let mut device = CryptInit::init(Path::new(path))?;
-    device
-        .context_handle()
-        .load::<()>(Some(EncryptionFormat::Luks2), None)?;
+    // Passing None for the format lets libcryptsetup auto-detect LUKS1 vs LUKS2 (and any other
+    // format it recognizes) from the on-disk header, instead of assuming every volume is LUKS2 -
+    // crypttab's "luks" type (EncryptionType::Luks) covers both versions, matching dracut/systemd
+    // behavior of not hardcoding a version.
+    device.context_handle().load::<()>(None, None)?;
 
     match &encrypted_device.unlock {
         UnlockType::Key(key) => {
