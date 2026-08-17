@@ -14,7 +14,6 @@ use crate::module_loader::ModuleLoader;
 
 #[derive(Debug)]
 pub struct Uevent {
-    name: String,
     vars: HashMap<String, String>,
 }
 
@@ -49,7 +48,7 @@ impl UeventListener {
         loop {
             buf.clear();
             let msglen = match self.socket.recv(&mut buf, 0) {
-                Ok(n) if n == 0 => continue,
+                Ok(0) => continue,
                 Ok(n) => n,
                 Err(e) => {
                     warn!("uevent socket recv error: {}", e);
@@ -186,10 +185,7 @@ pub fn parse_uevent(buf: &[u8]) -> Result<Uevent> {
         })
         .collect();
 
-    Ok(Uevent {
-        name: CString::new(name_bytes)?.into_string()?,
-        vars,
-    })
+    Ok(Uevent { vars })
 }
 
 pub fn parse_line(line: &[u8]) -> Result<(String, String)> {

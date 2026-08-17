@@ -109,14 +109,14 @@ impl DeviceHandler {
             cmdline
                 .iter()
                 .filter_map(|arg| arg.strip_prefix("resume="))
-                .last()
+                .next_back()
                 .map(|identifier| ResumeConfig {
                     identifier: Identifier::from(identifier),
                     offset: cmdline
                         .iter()
                         .filter_map(|arg| arg.strip_prefix("resume_offset="))
                         .filter_map(|val| val.parse::<u64>().ok())
-                        .last(),
+                        .next_back(),
                     devpath: None,
                 })
         };
@@ -132,7 +132,7 @@ impl DeviceHandler {
 
     fn is_ready(&self) -> bool {
         let all_unlocked = self.encrypted_devices.iter().all(|d| d.unlocked);
-        let resume_ready = self.resume.as_ref().map_or(true, |r| r.devpath.is_some());
+        let resume_ready = self.resume.as_ref().is_none_or(|r| r.devpath.is_some());
         self.root.devpath.is_some() && all_unlocked && resume_ready
     }
 
@@ -426,6 +426,14 @@ pub(crate) fn parse_crypttab(crypttab_path: &str) -> Result<Vec<EncryptedDevice>
         .collect())
 }
 
+fn ask_passphrase_for_device(encrypted_device: &EncryptedDevice) -> Result<String> {
+    rpassword::prompt_password(format!(
+        "Password for device {}: ",
+        encrypted_device.identifier
+    ))
+    .context("unable to read password from stdin")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,12 +596,4 @@ mod tests {
         .unwrap();
         assert!(handler.resume.is_none());
     }
-}
-
-fn ask_passphrase_for_device(encrypted_device: &EncryptedDevice) -> Result<String> {
-    rpassword::prompt_password(format!(
-        "Password for device {}: ",
-        encrypted_device.identifier
-    ))
-    .context("unable to read password from stdin")
 }

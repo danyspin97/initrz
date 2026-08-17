@@ -89,7 +89,7 @@ fn log_level_from_cmdline(cmdline: &[String]) -> LevelFilter {
                     .map(syslog_level_to_filter)
             }
         })
-        .last()
+        .next_back()
         .unwrap_or(LevelFilter::Trace)
 }
 
@@ -171,7 +171,7 @@ fn initrz() -> Result<()> {
         .iter()
         .filter_map(|arg| arg.strip_prefix("rootwait="))
         .filter_map(|val| val.parse::<u64>().ok())
-        .last()
+        .next_back()
         .unwrap_or(30);
 
     info!("waiting for root device (timeout {}s)", rootwait_secs);

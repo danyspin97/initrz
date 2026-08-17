@@ -11,7 +11,6 @@ use object::{
     },
     Endianness, StringTable,
 };
-use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -79,7 +78,6 @@ where
         if let Ok(Some(data)) = header.data_range(endian, data, strtab, strsz) {
             let dynstr = StringTable::new(data, 0, strsz);
             for offset in offsets {
-                let offset: u64 = offset.try_into()?;
                 let name = dynstr.get(offset as u32).ok().with_context(|| {
                     format!("DT_NEEDED offset {} out of range in string table", offset)
                 })?;

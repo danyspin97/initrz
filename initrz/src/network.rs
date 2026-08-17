@@ -37,7 +37,7 @@ struct StaticIpConfig {
 pub fn configure_from_cmdline(cmdline: &[String]) -> Result<()> {
     write_resolv_conf(cmdline)?;
 
-    let Some(param) = cmdline.iter().filter(|arg| arg.starts_with("ip=")).last() else {
+    let Some(param) = cmdline.iter().rfind(|arg| arg.starts_with("ip=")) else {
         return Ok(());
     };
     let value = param.strip_prefix("ip=").unwrap();

@@ -4,7 +4,6 @@ use glob::Pattern;
 use log::{debug, warn};
 use nix::kmod::init_module;
 use xz2::bufread::XzDecoder;
-use zstd;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;

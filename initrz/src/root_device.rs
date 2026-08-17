@@ -31,8 +31,7 @@ pub struct OverlayConfig {
 pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     let identifier = cmdline
         .iter()
-        .filter(|arg| arg.starts_with("root="))
-        .last()
+        .rfind(|arg| arg.starts_with("root="))
         .with_context(|| "no root= parameter found in kernel command line")?
         .strip_prefix("root=")
         .unwrap();
@@ -40,15 +39,14 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     // Root is read-only unless rw is the last of ro/rw to appear on the cmdline.
     let read_only = cmdline
         .iter()
-        .filter(|arg| arg.as_str() == "ro" || arg.as_str() == "rw")
-        .last()
+        .rfind(|arg| arg.as_str() == "ro" || arg.as_str() == "rw")
         .map(|arg| arg == "ro")
         .unwrap_or(true);
 
     let mut mount_options: Vec<String> = cmdline
         .iter()
         .filter_map(|arg| arg.strip_prefix("rootflags="))
-        .last()
+        .next_back()
         .map(|opts| opts.split(',').map(str::to_string).collect())
         .unwrap_or_default();
 
@@ -57,7 +55,7 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
     let nfsroot = cmdline
         .iter()
         .filter_map(|arg| arg.strip_prefix("nfsroot="))
-        .last();
+        .next_back();
 
     // NFS root: root=nfs:<server>:<path>, root=nfs4:<server>:<path>, or the legacy
     // root=/dev/nfs paired with nfsroot=<server>:<path>[,<options>]. NFSv4 only - see the
@@ -103,8 +101,7 @@ pub fn get_root_from_cmdline(cmdline: &[String]) -> Result<RootDevice> {
 
     let fs_str = cmdline
         .iter()
-        .filter(|arg| arg.starts_with("root.type="))
-        .last()
+        .rfind(|arg| arg.starts_with("root.type="))
         .and_then(|s| s.strip_prefix("root.type="))
         .unwrap_or("auto");
 
