@@ -166,7 +166,7 @@ Three layers, each catching a different class of bug (see the CI-related session
 several real, boot-breaking bugs were only ever caught by the layer below the one that "should
 have" caught them):
 
-1. **Unit tests** (`cargo test --workspace`, 68 tests as of this writing: 63 in `initrz`, 5 in
+1. **Unit tests** (`cargo test --workspace`, 80 tests as of this writing: 73 in `initrz`, 7 in
    `mkinitrz`). Mostly pure-function tests: cmdline parsing, crypttab parsing, uevent
    parsing, LVM metadata-text parsing (including a byte-for-byte synthetic PV image
    constructed field-by-field per the on-disk spec — this is what actually caught a label
@@ -207,6 +207,20 @@ path that calls it actually works. When changing anything in `uevent_listener.rs
 `device_handler.rs`, `mounts.rs`, or `main.rs`'s boot sequence, run the QEMU boot test (or
 `.github/scripts/qemu-boot-test.sh` locally, if you have `qemu-system-x86_64` + KVM + a kernel
 with modules available) before trusting it.
+
+**Known coverage gap**: the QEMU layer currently only boots a plain-partition root
+(`qemu-boot-test.sh`) and an LVM root (`qemu-boot-test-lvm.sh`). `unlock_luks_device` in
+`device_handler.rs` (real `libcryptsetup-rs` `CryptInit`/`activate_by_passphrase` calls) and the
+CIFS/NFS4/overlayfs/loop-device mount paths in `mounts.rs`/`loop_device.rs` have no unit test
+*or* QEMU test — the exact "parsing is tested, the adjacent real ioctl/syscall path is exercised
+by nothing" gap that let the netlink `recv()` bug above ship silently for multiple sessions. A
+LUKS QEMU test needs a real `cryptsetup luksFormat` on a loop device plus either a bundled
+keyfile (deterministic, CI-friendly) or piping a passphrase into QEMU's stdin over the serial
+console (`rd.luks.uuid=`/`rd.luks.name=` path); CIFS/NFS need a server the runner can talk to.
+Not added yet because it can't be built and verified against a real boot in this project's usual
+development sandbox (no `sudo`, no `cryptsetup` CLI, no loop-device access there) the way the
+LVM test was before it was trusted in CI — same reasoning as the RAID/fsck deferral above.
+Worth doing in a session with root + `cryptsetup` available; don't add it blind.
 
 ### Running the tests locally
 
