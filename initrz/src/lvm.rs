@@ -520,10 +520,11 @@ fn major_minor(devpath: &str) -> Result<(u32, u32)> {
     let meta =
         std::fs::metadata(devpath).with_context(|| format!("unable to stat {:?}", devpath))?;
     let rdev = meta.rdev();
-    // Matches glibc's gnu_dev_major()/gnu_dev_minor() (bits/sysmacros.h), which is what st_rdev
-    // is actually encoded with — not the kernel-internal MKDEV()/MAJOR()/MINOR() bit layout.
-    let major = (((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfffu64)) as u32;
-    let minor = ((rdev & 0xff) | ((rdev >> 12) & !0xffu64)) as u32;
+    // nix::sys::stat::major()/minor() decode st_rdev the same way glibc's gnu_dev_major()/
+    // gnu_dev_minor() (bits/sysmacros.h) do - use the crate's version instead of hand-rolling the
+    // same bit math (which uevent_listener.rs independently re-implements the inverse of).
+    let major = nix::sys::stat::major(rdev) as u32;
+    let minor = nix::sys::stat::minor(rdev) as u32;
     Ok((major, minor))
 }
 

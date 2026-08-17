@@ -146,12 +146,10 @@ fn mknod_block_device(devname: &str, path: &Path) -> Result<()> {
     let minor: u64 = minor
         .parse()
         .with_context(|| format!("parsing minor from {:?}", dev_str))?;
-    // Matches glibc's gnu_dev_makedev() (bits/sysmacros.h), the inverse of the encoding used to
-    // decode st_rdev elsewhere in this codebase (see lvm.rs's major_minor()).
-    let dev = ((major & 0xfffff000) << 32)
-        | ((major & 0xfff) << 8)
-        | ((minor & 0xffffff00) << 12)
-        | (minor & 0xff);
+    // nix::sys::stat::makedev() matches glibc's gnu_dev_makedev() (bits/sysmacros.h) - use the
+    // crate's version instead of hand-rolling the same bit math (which is the inverse of what
+    // lvm.rs's major_minor() decodes, so the two must otherwise be kept in sync by hand).
+    let dev = nix::sys::stat::makedev(major, minor);
 
     match nix::sys::stat::mknod(
         path,
