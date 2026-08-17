@@ -49,6 +49,7 @@ struct DmTargetSpecHeader {
 }
 
 ioctl_readwrite!(dm_dev_create, DM_IOCTL, 0x03, DmIoctlHeader);
+ioctl_readwrite!(dm_dev_remove, DM_IOCTL, 0x04, DmIoctlHeader);
 ioctl_readwrite!(dm_dev_suspend, DM_IOCTL, 0x06, DmIoctlHeader);
 ioctl_readwrite!(dm_table_load, DM_IOCTL, 0x09, DmIoctlHeader);
 
@@ -165,24 +166,46 @@ pub fn create_and_activate(name: &str, targets: &[DmTarget]) -> Result<()> {
     unsafe { dm_dev_create(ctrl.as_raw_fd(), &mut header) }
         .with_context(|| format!("DM_DEV_CREATE failed for {:?}", name))?;
 
-    let mut buf = DmIoctlBuffer {
-        header: new_header(name)?,
-        table: [0u8; DM_TABLE_BUF_LEN],
-    };
-    let offset = encode_targets(targets, &mut buf.table)
-        .with_context(|| format!("encoding device-mapper table for {:?}", name))?;
-    buf.header.target_count = targets.len() as u32;
-    buf.header.data_size = (std::mem::size_of::<DmIoctlHeader>() + offset) as u32;
+    // From here on, the device-mapper node exists in the kernel (and a uevent for it has
+    // already fired). If anything below fails, remove it instead of returning early and leaving
+    // a stray, tableless /dev/mapper/<name> behind - otherwise a retry after fixing the error
+    // would fail DM_DEV_CREATE with "device already exists".
+    let activate = (|| -> Result<()> {
+        let mut buf = DmIoctlBuffer {
+            header: new_header(name)?,
+            table: [0u8; DM_TABLE_BUF_LEN],
+        };
+        let offset = encode_targets(targets, &mut buf.table)
+            .with_context(|| format!("encoding device-mapper table for {:?}", name))?;
+        buf.header.target_count = targets.len() as u32;
+        buf.header.data_size = (std::mem::size_of::<DmIoctlHeader>() + offset) as u32;
 
-    unsafe { dm_table_load(ctrl.as_raw_fd(), &mut buf.header) }
-        .with_context(|| format!("DM_TABLE_LOAD failed for {:?}", name))?;
+        unsafe { dm_table_load(ctrl.as_raw_fd(), &mut buf.header) }
+            .with_context(|| format!("DM_TABLE_LOAD failed for {:?}", name))?;
 
-    // DM_DEV_SUSPEND without the suspend flag set resumes the device instead, which is what
-    // makes the just-loaded (inactive) table live — the same create+load+resume sequence
-    // `dmsetup create` performs.
-    let mut header = new_header(name)?;
-    unsafe { dm_dev_suspend(ctrl.as_raw_fd(), &mut header) }
-        .with_context(|| format!("DM_DEV_SUSPEND (resume) failed for {:?}", name))?;
+        // DM_DEV_SUSPEND without the suspend flag set resumes the device instead, which is what
+        // makes the just-loaded (inactive) table live — the same create+load+resume sequence
+        // `dmsetup create` performs.
+        let mut header = new_header(name)?;
+        unsafe { dm_dev_suspend(ctrl.as_raw_fd(), &mut header) }
+            .with_context(|| format!("DM_DEV_SUSPEND (resume) failed for {:?}", name))?;
+
+        Ok(())
+    })();
+
+    if let Err(err) = activate {
+        if let Ok(mut remove_header) = new_header(name) {
+            if let Err(remove_err) = unsafe { dm_dev_remove(ctrl.as_raw_fd(), &mut remove_header) }
+            {
+                log::warn!(
+                    "unable to remove partially-activated device-mapper device {:?} after error: {:?}",
+                    name,
+                    remove_err
+                );
+            }
+        }
+        return Err(err);
+    }
 
     Ok(())
 }
