@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 use anyhow::{bail, Context, Result};
+use libblkid_rs::BlkidCache;
 use log::{info, warn};
 
 use crate::device_mapper::{self, DmTarget};
@@ -491,14 +492,13 @@ fn parse_vg_metadata(text: &str) -> Result<VgMetadata> {
 /// LVM2_member prober reports the dashed form too (confirmed against a real probe), but
 /// stripping both sides is form-agnostic insurance either way.
 ///
-/// Probes fresh here rather than trusting /blkid.cache to already contain every PV of the VG:
-/// each PV's own uevent independently triggers device_handler.rs's LVM2_member check, but there
-/// is no ordering guarantee that every other PV's uevent has already been processed (and its
-/// tags cached) by the time this one runs a multi-PV VG's activation.
-fn resolve_pv_device(pv_id: &str) -> Result<String> {
+/// Takes an already-probed `cache` (see `activate_volume_group`) rather than probing fresh per
+/// call: each PV's own uevent independently triggers device_handler.rs's LVM2_member check, so
+/// resolving every PV of a multi-PV VG needs a cache that's been probed since the last one of
+/// them appeared - probing once up front for the whole VG activation covers that, instead of
+/// each PV paying its own full probe_all_new() pass.
+fn resolve_pv_device(cache: &BlkidCache, pv_id: &str) -> Result<String> {
     let wanted = pv_id.replace('-', "");
-    let mut cache = get_blkid_cache()?;
-    cache.probe_all_new()?;
     for device in cache.iter() {
         let devname = device.devname()?;
         let matched = device
@@ -565,9 +565,15 @@ pub fn activate_volume_group(pv_path: &str) -> Result<()> {
         vg.logical_volumes.len()
     );
 
+    // Probed once up front and reused for every PV below, instead of each resolve_pv_device()
+    // call opening its own handle and re-probing every block device from scratch - for an
+    // N-PV volume group that turned VG activation into N full probe passes instead of one.
+    let mut pv_cache = get_blkid_cache()?;
+    pv_cache.probe_all_new()?;
+
     let mut pv_devices: BTreeMap<&str, (u32, u32, u64)> = BTreeMap::new();
     for (pv_name, pv) in &vg.physical_volumes {
-        let devpath = resolve_pv_device(&pv.id)
+        let devpath = resolve_pv_device(&pv_cache, &pv.id)
             .with_context(|| format!("resolving PV {:?} of VG {:?}", pv_name, vg.name))?;
         let (major, minor) = major_minor(&devpath)?;
         pv_devices.insert(pv_name, (major, minor, pv.pe_start));
