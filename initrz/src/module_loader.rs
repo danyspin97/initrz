@@ -206,6 +206,20 @@ impl ModuleLoader {
 }
 
 #[cfg(test)]
+impl ModuleLoader {
+    /// A `ModuleLoader` with no modules/aliases, for tests elsewhere in the crate that need to
+    /// construct a `DeviceHandler` but don't exercise module loading.
+    pub(crate) fn empty() -> ModuleLoader {
+        ModuleLoader {
+            modules: HashMap::new(),
+            aliases: Vec::new(),
+            modules_loaded: RwLock::new(HashSet::new()),
+            kernel_root: PathBuf::new(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

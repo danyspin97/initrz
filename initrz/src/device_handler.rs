@@ -7,11 +7,13 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::encrypted_device::EncryptedDevice;
 use crate::encryption_type::EncryptionType;
 use crate::identifier::Identifier;
+use crate::module_loader::ModuleLoader;
 use crate::resume;
 use crate::root_device::{get_root_from_cmdline, RootDevice};
 use crate::unlock_type::UnlockType;
@@ -29,10 +31,27 @@ pub struct DeviceHandler {
     root: RootDevice,
     resume: Option<ResumeConfig>,
     pub(crate) encrypted_devices: Vec<EncryptedDevice>,
+    module_loader: Arc<ModuleLoader>,
+}
+
+/// dm-crypt (LUKS) and device-mapper LVM activation both need the dm_mod module, but neither
+/// has a PCI/USB modalias to trigger the usual sysfs-scan autoload - it has to be requested
+/// explicitly. load_module() is idempotent and dependency-resolving, so calling this from every
+/// DM-dependent call site is cheap and safe.
+fn ensure_dm_mod_loaded(module_loader: &ModuleLoader) {
+    // ModuleLoader keys modules by filename stem (hyphenated, "dm-mod"), not the canonical
+    // in-kernel module name reported by /proc/modules (underscored, "dm_mod").
+    if let Err(err) = module_loader.load_module("dm-mod") {
+        log::warn!("unable to load dm-mod: {:?}", err);
+    }
 }
 
 impl DeviceHandler {
-    pub fn init(crypttab_path: &str, cmdline: &[String]) -> Result<DeviceHandler> {
+    pub fn init(
+        crypttab_path: &str,
+        cmdline: &[String],
+        module_loader: Arc<ModuleLoader>,
+    ) -> Result<DeviceHandler> {
         let mut encrypted_devices = if Path::new(crypttab_path).exists() {
             parse_crypttab(crypttab_path)?
         } else {
@@ -102,6 +121,7 @@ impl DeviceHandler {
             root: get_root_from_cmdline(cmdline)?,
             resume,
             encrypted_devices,
+            module_loader,
         })
     }
 
@@ -266,6 +286,7 @@ impl DeviceHandler {
                     Identifier::Path(path) => devname_str == path,
                 })
             {
+                ensure_dm_mod_loaded(&self.module_loader);
                 unlock_luks_device(devname_str, &self.encrypted_devices[pos])?;
                 self.encrypted_devices[pos].unlocked = true;
             }
@@ -275,8 +296,10 @@ impl DeviceHandler {
     }
 
     pub fn handle(&mut self, path: &str) -> Result<()> {
+        let module_loader = self.module_loader.clone();
         if let Some(encrypted_device) = self.get_encrypted_device_mut(path) {
             if !encrypted_device.unlocked {
+                ensure_dm_mod_loaded(&module_loader);
                 unlock_luks_device(path, encrypted_device)?;
                 encrypted_device.unlocked = true;
             }
@@ -306,6 +329,7 @@ impl DeviceHandler {
         // output), never "lvm" - this comparison predates lvm.rs and never actually matched
         // anything on a real system.
         if filesystem == "LVM2_member" {
+            ensure_dm_mod_loaded(&self.module_loader);
             crate::lvm::activate_volume_group(path)
                 .with_context(|| format!("activating volume group on {:?}", path))?;
         }
@@ -428,7 +452,12 @@ mod tests {
     fn test_rd_luks_uuid_default_name() {
         let cmdline =
             make_cmdline("root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         assert_eq!(handler.encrypted_devices.len(), 1);
         assert_eq!(
             handler.encrypted_devices[0].name,
@@ -444,7 +473,12 @@ mod tests {
     fn test_rd_luks_name_override() {
         let cmdline =
             make_cmdline("root=UUID=aaa rd.luks.uuid=dead-beef rd.luks.name=dead-beef:cryptroot");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         assert_eq!(handler.encrypted_devices[0].name, "cryptroot");
     }
 
@@ -454,7 +488,7 @@ mod tests {
         // crypttab already has luks-home with this UUID; cmdline should not add a duplicate
         let cmdline =
             make_cmdline("root=UUID=aaa rd.luks.uuid=11111111-2222-3333-4444-555555555555");
-        let handler = DeviceHandler::init(path, &cmdline).unwrap();
+        let handler = DeviceHandler::init(path, &cmdline, Arc::new(ModuleLoader::empty())).unwrap();
         let count = handler
             .encrypted_devices
             .iter()
@@ -469,7 +503,12 @@ mod tests {
     #[test]
     fn test_resume_uuid_parsed() {
         let cmdline = make_cmdline("root=UUID=aaa resume=UUID=deadbeef-0000");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         let resume = handler.resume.as_ref().unwrap();
         assert!(matches!(&resume.identifier, Identifier::Uuid(u) if u == "deadbeef-0000"));
         assert_eq!(resume.offset, None);
@@ -478,7 +517,12 @@ mod tests {
     #[test]
     fn test_resume_offset_parsed() {
         let cmdline = make_cmdline("root=UUID=aaa resume=/dev/sda2 resume_offset=12345");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         let resume = handler.resume.as_ref().unwrap();
         assert!(matches!(&resume.identifier, Identifier::Path(p) if p == "/dev/sda2"));
         assert_eq!(resume.offset, Some(12345));
@@ -487,14 +531,24 @@ mod tests {
     #[test]
     fn test_no_resume_by_default() {
         let cmdline = make_cmdline("root=UUID=aaa");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         assert!(handler.resume.is_none());
     }
 
     #[test]
     fn test_noresume_disables_resume() {
         let cmdline = make_cmdline("root=UUID=aaa resume=UUID=deadbeef-0000 noresume");
-        let handler = DeviceHandler::init("/nonexistent/crypttab", &cmdline).unwrap();
+        let handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
         assert!(handler.resume.is_none());
     }
 }

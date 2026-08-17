@@ -117,12 +117,51 @@ impl UeventListener {
             let dm_name_path = Path::new("/sys/block").join(devname).join("dm/name");
             let dm_name = fs::read_to_string(&dm_name_path)
                 .with_context(|| format!("unable to read {:?}", dm_name_path))?;
-            Path::new("/dev/mapper").join(dm_name.trim())
+            let path = Path::new("/dev/mapper").join(dm_name.trim());
+            // Unlike plain block devices (which devtmpfs already creates at /dev/<name>
+            // automatically), the kernel only ever creates /dev/<devname> (e.g. /dev/dm-0) for
+            // device-mapper devices - the friendly /dev/mapper/<name> path is normally created
+            // by udev, which doesn't run here, so we have to mknod it ourselves.
+            mknod_block_device(devname, &path)?;
+            path
         } else {
             Path::new("/dev").join(devname)
         };
 
         Ok(Some(path.to_string_lossy().into_owned()))
+    }
+}
+
+/// Create a block device node at `path` with the same major:minor as `/sys/block/<devname>`.
+fn mknod_block_device(devname: &str, path: &Path) -> Result<()> {
+    let dev_path = Path::new("/sys/block").join(devname).join("dev");
+    let dev_str =
+        fs::read_to_string(&dev_path).with_context(|| format!("unable to read {:?}", dev_path))?;
+    let (major, minor) = dev_str
+        .trim()
+        .split_once(':')
+        .with_context(|| format!("unexpected content in {:?}: {:?}", dev_path, dev_str))?;
+    let major: u64 = major
+        .parse()
+        .with_context(|| format!("parsing major from {:?}", dev_str))?;
+    let minor: u64 = minor
+        .parse()
+        .with_context(|| format!("parsing minor from {:?}", dev_str))?;
+    // Matches glibc's gnu_dev_makedev() (bits/sysmacros.h), the inverse of the encoding used to
+    // decode st_rdev elsewhere in this codebase (see lvm.rs's major_minor()).
+    let dev = ((major & 0xfffff000) << 32)
+        | ((major & 0xfff) << 8)
+        | ((minor & 0xffffff00) << 12)
+        | (minor & 0xff);
+
+    match nix::sys::stat::mknod(
+        path,
+        nix::sys::stat::SFlag::S_IFBLK,
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+        dev,
+    ) {
+        Ok(()) | Err(nix::errno::Errno::EEXIST) => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("mknod failed for {:?}", path)),
     }
 }
 

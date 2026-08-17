@@ -113,7 +113,8 @@ fn initrz() -> Result<()> {
 
     info!("creating internal objects");
     let module_loader = Arc::new(ModuleLoader::init(&get_kernel_version()?)?);
-    let mut device_handler = DeviceHandler::init("/etc/crypttab.initramfs", &cmdline)?;
+    let mut device_handler =
+        DeviceHandler::init("/etc/crypttab.initramfs", &cmdline, module_loader.clone())?;
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
     info!("probing available devices");
