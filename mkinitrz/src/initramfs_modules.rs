@@ -69,26 +69,60 @@ pub fn get_modules(
     let additional_modules = additional_modules.into_iter().collect::<HashSet<String>>();
     let modules = get_all_modules(kroot)?;
 
-    Ok(match initramfs_type {
+    let selected_names: HashSet<String> = match initramfs_type {
         InitramfsType::General => modules
             .par_iter()
-            .filter(|(name, path)| {
+            .filter(|(name, path, _deps)| {
                 is_module_needed(name, path) || additional_modules.contains(name)
             })
-            .map(|(_, path)| kroot.join(path))
-            .collect::<Vec<Utf8PathBuf>>(),
+            .map(|(name, _, _)| name.clone())
+            .collect(),
         InitramfsType::Host => {
             let host_modules = get_host_modules()?.into_iter().collect::<HashSet<String>>();
             modules
                 .par_iter()
-                .filter(|(name, path)| {
+                .filter(|(name, path, _deps)| {
                     (host_modules.contains(name) && is_module_needed(name, path))
                         || additional_modules.contains(name)
                 })
-                .map(|(_, path)| kroot.join(path))
-                .collect::<Vec<Utf8PathBuf>>()
+                .map(|(name, _, _)| name.clone())
+                .collect()
         }
-    })
+    };
+
+    let with_deps = expand_dependencies(&modules, selected_names);
+
+    Ok(modules
+        .iter()
+        .filter(|(name, _, _)| with_deps.contains(name))
+        .map(|(_, path, _)| kroot.join(path))
+        .collect())
+}
+
+/// modules.dep lines list a module's own prerequisite modules (already-resolved transitively by
+/// `depmod`) after the colon; walk that graph so a module pulled in for any reason (heuristic
+/// match, `additional_modules`, or a host-loaded module) brings its dependencies along too,
+/// instead of silently shipping a module that will fail to `init_module` at boot.
+fn expand_dependencies(
+    modules: &[(String, Utf8PathBuf, Vec<String>)],
+    selected: HashSet<String>,
+) -> HashSet<String> {
+    let deps_by_name: std::collections::HashMap<&str, &Vec<String>> = modules
+        .iter()
+        .map(|(name, _, deps)| (name.as_str(), deps))
+        .collect();
+
+    let mut result = HashSet::new();
+    let mut stack: Vec<String> = selected.into_iter().collect();
+    while let Some(name) = stack.pop() {
+        if !result.insert(name.clone()) {
+            continue;
+        }
+        if let Some(deps) = deps_by_name.get(name.as_str()) {
+            stack.extend(deps.iter().cloned());
+        }
+    }
+    result
 }
 
 fn get_module_name(filename: &Utf8Path) -> Result<String> {
@@ -106,19 +140,30 @@ fn get_module_name(filename: &Utf8Path) -> Result<String> {
         .to_string())
 }
 
-fn get_all_modules(kroot: &Utf8Path) -> Result<Vec<(String, Utf8PathBuf)>> {
+fn get_all_modules(kroot: &Utf8Path) -> Result<Vec<(String, Utf8PathBuf, Vec<String>)>> {
     BufReader::new(
         File::open(kroot.join("modules.dep")).with_context(|| "unable to open modules.dep")?,
     )
     .lines()
     .map_while(Result::ok)
-    .map(|line| -> Result<(String, Utf8PathBuf)> {
+    .map(|line| -> Result<(String, Utf8PathBuf, Vec<String>)> {
+        let mut parts = line.splitn(2, ':');
         let module_path = Utf8Path::new(
-            line.split(':')
+            parts
                 .next()
                 .with_context(|| "unable to get module from modules.dep")?,
         );
-        Ok((get_module_name(module_path)?, module_path.to_path_buf()))
+        let deps = parts
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .filter_map(|dep| get_module_name(Utf8Path::new(dep)).ok())
+            .collect();
+        Ok((
+            get_module_name(module_path)?,
+            module_path.to_path_buf(),
+            deps,
+        ))
     })
     .collect()
 }
@@ -135,4 +180,59 @@ fn get_host_modules() -> Result<Vec<String>> {
             .map(|module| module.to_string())
     })
     .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_kroot() -> Utf8PathBuf {
+        Utf8PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/test"))
+    }
+
+    #[test]
+    fn get_all_modules_keeps_dependency_names() {
+        let modules = get_all_modules(&test_kroot()).unwrap();
+        let (_, _, deps) = modules
+            .iter()
+            .find(|(name, _, _)| name == "nvidia-uvm")
+            .expect("nvidia-uvm not found");
+        assert_eq!(deps, &vec!["nvidia".to_string()]);
+
+        let (_, _, deps) = modules
+            .iter()
+            .find(|(name, _, _)| name == "qrtr-mhi")
+            .expect("qrtr-mhi not found");
+        let mut deps = deps.clone();
+        deps.sort();
+        assert_eq!(
+            deps,
+            vec!["mhi".to_string(), "ns".to_string(), "qrtr".to_string()]
+        );
+    }
+
+    #[test]
+    fn get_modules_transitively_includes_dependencies() {
+        // nvidia-uvm doesn't match any is_module_needed() heuristic on its own, so it's only
+        // included via additional_modules; its dependency "nvidia" must be pulled in too even
+        // though nothing directly requested it, or init_module() for nvidia-uvm would fail at
+        // boot with a missing dependency.
+        let modules = get_modules(
+            InitramfsType::General,
+            &test_kroot(),
+            vec!["nvidia-uvm".to_string()],
+        )
+        .unwrap();
+
+        let names: HashSet<String> = modules
+            .iter()
+            .map(|path| get_module_name(path).unwrap())
+            .collect();
+        assert!(names.contains("nvidia-uvm"));
+        assert!(
+            names.contains("nvidia"),
+            "dependency of an explicitly-requested module was dropped: {:?}",
+            names
+        );
+    }
 }
