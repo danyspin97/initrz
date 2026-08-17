@@ -35,7 +35,7 @@ impl fmt::Display for Identifier {
 impl Identifier {
     pub fn get_path(&self) -> Result<String> {
         Ok(match self {
-            Identifier::Uuid(uuid) => get_blkid_cache().get_devname(Right((&UUID_TAG, &uuid)))?,
+            Identifier::Uuid(uuid) => get_blkid_cache()?.get_devname(Right((&UUID_TAG, &uuid)))?,
             Identifier::Path(path) => {
                 if !Path::new(path).exists() {
                     bail!("unable to find device in path {:?}", path);

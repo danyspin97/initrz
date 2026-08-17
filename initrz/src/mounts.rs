@@ -233,7 +233,9 @@ fn open_and_mount(
 /// skipped rather than propagated: a single-device btrfs root doesn't need this at all, and a
 /// device that's already registered (or unreadable) shouldn't block the mount attempt.
 fn register_btrfs_devices() {
-    let mut cache = get_blkid_cache();
+    let Ok(mut cache) = get_blkid_cache() else {
+        return;
+    };
     if cache.probe_all_new().is_err() {
         return;
     }

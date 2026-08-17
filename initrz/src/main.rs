@@ -118,7 +118,7 @@ fn initrz() -> Result<()> {
     let uevent_listener = UeventListener::init(module_loader.clone())?;
 
     info!("probing available devices");
-    let mut cache = get_blkid_cache();
+    let mut cache = get_blkid_cache()?;
     cache.probe_all()?;
     cache.probe_all_removable()?;
     cache.put_cache();

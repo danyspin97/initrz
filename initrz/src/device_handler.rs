@@ -171,7 +171,7 @@ impl DeviceHandler {
     }
 
     fn get_encrypted_device_mut(&mut self, path: &str) -> Option<&mut EncryptedDevice> {
-        let blkid_cache = get_blkid_cache();
+        let blkid_cache = get_blkid_cache().ok()?;
         let uuid = blkid_cache
             .get_tag_value("UUID", &PathBuf::from(path))
             .unwrap_or_default();
@@ -222,7 +222,7 @@ impl DeviceHandler {
         };
 
         let mut found = None;
-        for device in get_blkid_cache().iter() {
+        for device in get_blkid_cache()?.iter() {
             let devname = device.devname()?;
             let matched = match identifier {
                 Identifier::Uuid(uuid) => device
@@ -261,7 +261,7 @@ impl DeviceHandler {
             }
         }
 
-        for device in get_blkid_cache().iter() {
+        for device in get_blkid_cache()?.iter() {
             let devname = device.devname()?;
             let root_identifier = &self.root.identifier;
             if match root_identifier {
@@ -279,7 +279,7 @@ impl DeviceHandler {
     }
 
     pub fn unlock_available_devices(&mut self) -> Result<()> {
-        for device in get_blkid_cache().iter() {
+        for device in get_blkid_cache()?.iter() {
             let devname = device.devname()?;
             let devname_str = devname.to_str().unwrap();
             if let Some(pos) = self
@@ -322,7 +322,7 @@ impl DeviceHandler {
             return Ok(());
         }
 
-        let mut blkid_cache = get_blkid_cache();
+        let mut blkid_cache = get_blkid_cache()?;
         blkid_cache.probe_all_new()?;
 
         let filesystem = blkid_cache.get_tag_value("TYPE", &PathBuf::from(path));

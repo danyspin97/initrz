@@ -50,7 +50,7 @@ impl std::convert::TryFrom<String> for Filesystem {
 impl Filesystem {
     pub fn get_filesystem_string(&self, path: &str) -> Result<String> {
         Ok(match self {
-            Filesystem::Auto => get_blkid_cache()
+            Filesystem::Auto => get_blkid_cache()?
                 .get_tag_value("TYPE", &PathBuf::from(path))
                 .with_context(|| format!("unable to get filesystem type for device {:?}", path))?,
             Filesystem::Ext4 => "ext4".to_string(),

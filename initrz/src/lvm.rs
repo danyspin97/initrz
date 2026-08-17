@@ -497,7 +497,7 @@ fn parse_vg_metadata(text: &str) -> Result<VgMetadata> {
 /// tags cached) by the time this one runs a multi-PV VG's activation.
 fn resolve_pv_device(pv_id: &str) -> Result<String> {
     let wanted = pv_id.replace('-', "");
-    let mut cache = get_blkid_cache();
+    let mut cache = get_blkid_cache()?;
     cache.probe_all_new()?;
     for device in cache.iter() {
         let devname = device.devname()?;
