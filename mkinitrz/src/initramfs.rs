@@ -215,7 +215,7 @@ impl Initramfs {
         }
 
         if file.is_symlink() {
-            let pointed_file = path.read_link_utf8()?;
+            let pointed_file = file.read_link_utf8()?;
             // if pointed file is not absolute, join the directory of the symlink with the pointed
             // file
             let pointed_file = if pointed_file.is_absolute() {
