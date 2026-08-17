@@ -122,6 +122,18 @@ fn read_vg_metadata_text<R: Read + Seek>(
     if data_area_offset == 0 && data_area_size == 0 {
         bail!("metadata area has no location descriptors");
     }
+    // VG text metadata is a handful of KiB in practice; LVM2 itself defaults the whole metadata
+    // area to 1 MiB. Cap well above that (16 MiB) so a corrupted/torn-write size field can't make
+    // us request a multi-exabyte allocation and abort the process (we run as PID 1) before
+    // read_exact() ever gets a chance to fail normally on a short file.
+    const MAX_METADATA_TEXT_SIZE: u64 = 16 * 1024 * 1024;
+    if data_area_size > MAX_METADATA_TEXT_SIZE {
+        bail!(
+            "metadata area data_area_size {} exceeds sanity limit of {} bytes",
+            data_area_size,
+            MAX_METADATA_TEXT_SIZE
+        );
+    }
 
     let mut text = vec![0u8; data_area_size as usize];
     file.seek(SeekFrom::Start(mda_offset + data_area_offset))
@@ -883,6 +895,21 @@ vg0 {
         assert!(build_dm_targets("vg0", &pv_devices, 8192, "root", &lv)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn read_vg_metadata_text_rejects_absurd_data_area_size() {
+        // Build a synthetic metadata-area header with a data_area_size field far beyond any real
+        // VG's text metadata, and confirm it errors instead of attempting a huge allocation.
+        let mut header = [0u8; SECTOR_SIZE as usize];
+        header[4..20].copy_from_slice(b" LVM2 x[5A%r0N*>");
+        let locdesc_start = 4 + 16 + 4 + 8 + 8;
+        header[locdesc_start..locdesc_start + 8].copy_from_slice(&512u64.to_le_bytes());
+        header[locdesc_start + 8..locdesc_start + 16].copy_from_slice(&u64::MAX.to_le_bytes());
+
+        let mut cursor = std::io::Cursor::new(header.to_vec());
+        let err = read_vg_metadata_text(&mut cursor, (0, 0)).unwrap_err();
+        assert!(err.to_string().contains("exceeds sanity limit"));
     }
 
     /// Byte-for-byte construction of a minimal PV image (label sector + PV header + metadata
