@@ -54,6 +54,7 @@ ioctl_readwrite!(dm_table_load, DM_IOCTL, 0x09, DmIoctlHeader);
 
 /// One row of a device-mapper table: `<start_sector> <length_sectors> <target_type> <params>`,
 /// the same shape as a line of `dmsetup create` input.
+#[derive(Debug)]
 pub struct DmTarget {
     pub start_sector: u64,
     pub length_sectors: u64,

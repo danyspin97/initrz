@@ -562,69 +562,11 @@ pub fn activate_volume_group(pv_path: &str) -> Result<()> {
     }
 
     for (lv_name, lv) in &vg.logical_volumes {
-        let mut targets = Vec::new();
-        let mut supported = true;
-        for segment in &lv.segments {
-            if !is_supported_segment_type(&segment.segment_type) {
-                warn!(
-                    "logical volume {}/{}: unsupported segment type {:?}, skipping activation",
-                    vg.name, lv_name, segment.segment_type
-                );
-                supported = false;
-                break;
-            };
-            if segment.stripe_count as usize != segment.stripes.len() {
-                bail!(
-                    "logical volume {}/{}: stripe_count {} doesn't match {} stripe(s)",
-                    vg.name,
-                    lv_name,
-                    segment.stripe_count,
-                    segment.stripes.len()
-                );
-            }
-
-            let start_sector = segment.start_extent * vg.extent_size;
-            let length_sectors = segment.extent_count * vg.extent_size;
-
-            // A single-stripe segment is a plain "linear" DM target (<dev> <offset>). DM's
-            // "striped" target is a different params shape (<#stripes> <chunk_size> <dev>
-            // <offset> ...) that only applies once there's more than one stripe to interleave.
-            let (target_type, params) = if segment.stripe_count == 1 {
-                let (pv_name, pe_offset) = &segment.stripes[0];
-                let &(major, minor, pe_start) = pv_devices
-                    .get(pv_name.as_str())
-                    .with_context(|| format!("segment references unknown PV {:?}", pv_name))?;
-                (
-                    "linear",
-                    format!(
-                        "{}:{} {}",
-                        major,
-                        minor,
-                        pe_start + pe_offset * vg.extent_size
-                    ),
-                )
-            } else {
-                // dm "striped" params: <#stripes> <chunk_size_sectors> <dev1> <off1> ...
-                // LVM's default stripe unit is 64 KiB; without stripe_size recorded on the
-                // segment (the text metadata field we don't currently read) we can't recover a
-                // custom stripe size, so multi-stripe LVs beyond the default aren't supported
-                // yet. Bail loudly instead of guessing at boot-critical geometry.
-                bail!(
-                    "logical volume {}/{}: multi-stripe segments are not supported yet",
-                    vg.name,
-                    lv_name
-                );
-            };
-
-            targets.push(DmTarget {
-                start_sector,
-                length_sectors,
-                target_type: target_type.to_string(),
-                params,
-            });
-        }
-
-        if !supported || targets.is_empty() {
+        let Some(targets) = build_dm_targets(&vg.name, &pv_devices, vg.extent_size, lv_name, lv)?
+        else {
+            continue;
+        };
+        if targets.is_empty() {
             continue;
         }
 
@@ -634,6 +576,100 @@ pub fn activate_volume_group(pv_path: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Turn one logical volume's segments into device-mapper targets. Pure function of already-parsed
+/// metadata and resolved PV device numbers (no I/O), so on-disk-geometry edge cases — overflow,
+/// unsupported segment types, stripe-count mismatches — can be unit tested directly instead of
+/// only through a real device-mapper activation.
+///
+/// Returns `Ok(None)` for a logical volume with an unsupported segment type (logged and skipped,
+/// same as before: it shouldn't abort activation of the rest of the VG).
+fn build_dm_targets(
+    vg_name: &str,
+    pv_devices: &BTreeMap<&str, (u32, u32, u64)>,
+    extent_size: u64,
+    lv_name: &str,
+    lv: &LvDesc,
+) -> Result<Option<Vec<DmTarget>>> {
+    let mut targets = Vec::new();
+    for segment in &lv.segments {
+        if !is_supported_segment_type(&segment.segment_type) {
+            warn!(
+                "logical volume {}/{}: unsupported segment type {:?}, skipping activation",
+                vg_name, lv_name, segment.segment_type
+            );
+            return Ok(None);
+        };
+        if segment.stripe_count as usize != segment.stripes.len() {
+            bail!(
+                "logical volume {}/{}: stripe_count {} doesn't match {} stripe(s)",
+                vg_name,
+                lv_name,
+                segment.stripe_count,
+                segment.stripes.len()
+            );
+        }
+
+        let start_sector = segment
+            .start_extent
+            .checked_mul(extent_size)
+            .with_context(|| {
+                format!(
+                    "logical volume {}/{}: start_extent * extent_size overflows u64",
+                    vg_name, lv_name
+                )
+            })?;
+        let length_sectors = segment
+            .extent_count
+            .checked_mul(extent_size)
+            .with_context(|| {
+                format!(
+                    "logical volume {}/{}: extent_count * extent_size overflows u64",
+                    vg_name, lv_name
+                )
+            })?;
+
+        // A single-stripe segment is a plain "linear" DM target (<dev> <offset>). DM's
+        // "striped" target is a different params shape (<#stripes> <chunk_size> <dev>
+        // <offset> ...) that only applies once there's more than one stripe to interleave.
+        let (target_type, params) = if segment.stripe_count == 1 {
+            let (pv_name, pe_offset) = &segment.stripes[0];
+            let &(major, minor, pe_start) = pv_devices
+                .get(pv_name.as_str())
+                .with_context(|| format!("segment references unknown PV {:?}", pv_name))?;
+            let offset_sectors = pe_offset
+                .checked_mul(extent_size)
+                .and_then(|v| v.checked_add(pe_start))
+                .with_context(|| {
+                    format!(
+                        "logical volume {}/{}: pe_start + pe_offset * extent_size overflows u64",
+                        vg_name, lv_name
+                    )
+                })?;
+            ("linear", format!("{}:{} {}", major, minor, offset_sectors))
+        } else {
+            // dm "striped" params: <#stripes> <chunk_size_sectors> <dev1> <off1> ...
+            // LVM's default stripe unit is 64 KiB; without stripe_size recorded on the
+            // segment (the text metadata field we don't currently read) we can't recover a
+            // custom stripe size, so multi-stripe LVs beyond the default aren't supported
+            // yet. Bail loudly instead of guessing at boot-critical geometry.
+            bail!(
+                "logical volume {}/{}: multi-stripe segments are not supported yet",
+                vg_name,
+                lv_name
+            );
+        };
+
+        targets.push(DmTarget {
+            start_sector,
+            length_sectors,
+            target_type: target_type.to_string(),
+            params,
+        });
+    }
+
+    Ok(Some(targets))
 }
 
 #[cfg(test)]
@@ -765,6 +801,88 @@ vg0 {
     #[test]
     fn rejects_metadata_with_trailing_garbage() {
         assert!(metadata_text::parse("vg0 { id = \"x\" } garbage").is_err());
+    }
+
+    fn linear_lv(start_extent: u64, extent_count: u64, pe_offset: u64) -> LvDesc {
+        LvDesc {
+            segments: vec![SegmentDesc {
+                start_extent,
+                extent_count,
+                segment_type: "striped".to_string(),
+                stripe_count: 1,
+                stripes: vec![("pv0".to_string(), pe_offset)],
+            }],
+        }
+    }
+
+    #[test]
+    fn build_dm_targets_computes_sector_offsets() {
+        let mut pv_devices = BTreeMap::new();
+        pv_devices.insert("pv0", (8u32, 2u32, 2048u64));
+        let lv = linear_lv(0, 100, 0);
+
+        let targets = build_dm_targets("vg0", &pv_devices, 8192, "root", &lv)
+            .unwrap()
+            .unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].start_sector, 0);
+        assert_eq!(targets[0].length_sectors, 100 * 8192);
+        assert_eq!(targets[0].params, "8:2 2048");
+    }
+
+    #[test]
+    fn build_dm_targets_rejects_start_extent_overflow() {
+        let mut pv_devices = BTreeMap::new();
+        pv_devices.insert("pv0", (8u32, 2u32, 2048u64));
+        let lv = linear_lv(u64::MAX, 1, 0);
+
+        let err = build_dm_targets("vg0", &pv_devices, 8192, "root", &lv).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("start_extent * extent_size overflows"));
+    }
+
+    #[test]
+    fn build_dm_targets_rejects_extent_count_overflow() {
+        let mut pv_devices = BTreeMap::new();
+        pv_devices.insert("pv0", (8u32, 2u32, 2048u64));
+        let lv = linear_lv(0, u64::MAX, 0);
+
+        let err = build_dm_targets("vg0", &pv_devices, 8192, "root", &lv).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("extent_count * extent_size overflows"));
+    }
+
+    #[test]
+    fn build_dm_targets_rejects_pe_offset_overflow() {
+        let mut pv_devices = BTreeMap::new();
+        pv_devices.insert("pv0", (8u32, 2u32, 2048u64));
+        let lv = linear_lv(0, 1, u64::MAX);
+
+        let err = build_dm_targets("vg0", &pv_devices, 8192, "root", &lv).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("pe_start + pe_offset * extent_size overflows"));
+    }
+
+    #[test]
+    fn build_dm_targets_skips_unsupported_segment_type_without_erroring() {
+        let mut pv_devices = BTreeMap::new();
+        pv_devices.insert("pv0", (8u32, 2u32, 2048u64));
+        let lv = LvDesc {
+            segments: vec![SegmentDesc {
+                start_extent: 0,
+                extent_count: 10,
+                segment_type: "mirror".to_string(),
+                stripe_count: 1,
+                stripes: vec![("pv0".to_string(), 0)],
+            }],
+        };
+
+        assert!(build_dm_targets("vg0", &pv_devices, 8192, "root", &lv)
+            .unwrap()
+            .is_none());
     }
 
     /// Byte-for-byte construction of a minimal PV image (label sector + PV header + metadata
