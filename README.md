@@ -249,12 +249,6 @@ Two module-selection modes:
 `modules`, `binaries` (ELF, dependency-resolved same as the built-ins), and `files` (copied
 verbatim) to include.
 
-**Known inconsistency worth knowing about**: `mkinitrz/src/initramfs.rs` still
-unconditionally bundles `/sbin/vgchange` and `/sbin/vgmknodes`, a leftover from before LVM
-activation was reimplemented natively (`lvm.rs`/`device_mapper.rs`, see Philosophy) — `initrz`
-itself never calls either binary anymore. They're dead weight in the image now, not a
-correctness bug.
-
 ## Repository layout
 
 ```

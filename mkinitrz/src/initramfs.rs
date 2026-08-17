@@ -59,9 +59,6 @@ impl Initramfs {
         );
         initramfs.add_elf_with_path(&initrz, Utf8Path::new("/init"))?;
 
-        initramfs.add_elf(Utf8Path::new("/sbin/vgchange"))?;
-        initramfs.add_elf(Utf8Path::new("/sbin/vgmknodes"))?;
-
         initramfs.add_elf(Utf8Path::new("/bin/busybox"))?;
 
         let ld_conf = Utf8Path::new("/etc/ld.so.conf");
