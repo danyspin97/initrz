@@ -135,7 +135,13 @@ impl DeviceHandler {
         if self.is_ready() {
             return Ok(());
         }
-        let deadline = std::time::Instant::now() + timeout;
+        // timeout comes from the unvalidated rootwait= cmdline parameter; a huge value must not
+        // panic (Instant + Duration overflow aborts the process, and we're PID 1). Fall back to
+        // the furthest representable deadline instead, which still lets recv_timeout() work with
+        // "remaining" durations far larger than any real boot would ever wait for.
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(|| std::time::Instant::now() + Duration::from_secs(365 * 24 * 3600));
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
@@ -538,6 +544,31 @@ mod tests {
         )
         .unwrap();
         assert!(handler.resume.is_none());
+    }
+
+    #[test]
+    fn test_listen_handles_huge_rootwait_without_panicking() {
+        // rootwait= is an unvalidated u64 straight off the kernel cmdline; Instant::now() +
+        // Duration::from_secs(u64::MAX) used to panic ("overflow when adding duration to
+        // instant") before it ever got a chance to wait for anything. Dropping the sender makes
+        // recv_timeout() return Disconnected immediately regardless of the timeout, so this test
+        // exercises the deadline computation without actually blocking.
+        let cmdline = make_cmdline("root=UUID=aaa");
+        let mut handler = DeviceHandler::init(
+            "/nonexistent/crypttab",
+            &cmdline,
+            Arc::new(ModuleLoader::empty()),
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        drop(tx);
+
+        let err = handler
+            .listen(rx, Duration::from_secs(u64::MAX))
+            .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("uevent listener thread exited unexpectedly"));
     }
 
     #[test]
