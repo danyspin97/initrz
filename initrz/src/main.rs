@@ -107,9 +107,6 @@ fn initrz() -> Result<()> {
 
     info!("mounted special filesystems and parsed command line");
 
-    info!("configuring network");
-    network::configure_from_cmdline(&cmdline)?;
-
     info!("creating internal objects");
     let module_loader = Arc::new(ModuleLoader::init(&get_kernel_version()?)?);
     let mut device_handler =
@@ -164,6 +161,13 @@ fn initrz() -> Result<()> {
                 );
             }
         });
+
+    // Run after the modalias scan above (not at the top of initrz()): the NIC driver is only
+    // loaded as a module through that scan, and configure_from_cmdline() looks the device up in
+    // /sys/class/net, which is empty until the driver is bound. Running before that made any
+    // ip= configuration fail outright on every machine where the NIC driver isn't built in.
+    info!("configuring network");
+    network::configure_from_cmdline(&cmdline)?;
 
     let rootwait_secs = cmdline
         .iter()
