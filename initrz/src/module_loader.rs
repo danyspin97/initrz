@@ -49,9 +49,12 @@ pub fn parse_module_dep(filename: &Path) -> Result<HashMap<String, Module>> {
             let mut deps: Vec<String> = Vec::new();
             let rest_of_line = &line[token_index + 1..];
             if !rest_of_line.is_empty() {
-                // iter.rest() returns " kernel/..." so skip the first space
-                let split = rest_of_line[1..].split(' ');
-                split
+                // Whitespace-split rather than a raw byte slice on the assumption of a
+                // single-byte ASCII separator: a malformed/hand-edited modules.dep line could
+                // otherwise land the slice mid-codepoint and panic ("byte index is not a char
+                // boundary") on what should be a tolerable per-line parse error.
+                rest_of_line
+                    .split_whitespace()
                     .filter_map(|dep| get_module_name(dep).ok())
                     .for_each(|dep| deps.push(dep));
 
@@ -126,6 +129,14 @@ impl ModuleLoader {
     }
 
     pub fn load_module(&self, module_name: &str) -> Result<bool> {
+        self.load_module_inner(module_name, &mut HashSet::new())
+    }
+
+    fn load_module_inner(
+        &self,
+        module_name: &str,
+        in_progress: &mut HashSet<String>,
+    ) -> Result<bool> {
         if self.modules_loaded.read().unwrap().contains(module_name) {
             return Ok(true);
         }
@@ -135,12 +146,21 @@ impl ModuleLoader {
             None => return Ok(false),
         };
 
+        if !in_progress.insert(module_name.to_string()) {
+            bail!(
+                "cycle detected in modules.dep dependency chain at module {:?}",
+                module_name
+            );
+        }
+
         debug!("loading module {}", module_name);
 
         // Load dependencies first (they handle their own dedup)
         for dep in &module.deps {
-            self.load_module(dep)?;
+            self.load_module_inner(dep, in_progress)?;
         }
+
+        in_progress.remove(module_name);
 
         // Claim the slot under write lock; if another thread beat us here, skip loading
         {
@@ -275,5 +295,79 @@ mod tests {
         assert_eq!(aliases.len(), 2);
         assert_eq!(aliases[0].module, "e1000e");
         assert_eq!(aliases[1].module, "usbmod");
+    }
+
+    #[test]
+    fn parse_module_dep_does_not_panic_on_multibyte_separator() {
+        // A hand-edited/corrupted line where the byte after ':' is the start of a multi-byte
+        // UTF-8 codepoint used to panic ("byte index is not a char boundary") on the raw
+        // rest_of_line[1..] slice; it must now just fail to resolve that one dep and move on.
+        let dir = std::env::temp_dir().join(format!(
+            "initrz-test-multibyte-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("modules.dep");
+        std::fs::write(&path, "kernel/a.ko:\u{00e9}kernel/b.ko\n").unwrap();
+
+        let map = parse_module_dep(&path).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("a"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A `ModuleLoader` whose `modules` map is a caller-supplied dependency graph, for tests that
+    /// need specific (including cyclic) dependency shapes without a real modules.dep fixture.
+    fn loader_with_modules(modules: HashMap<String, Module>) -> ModuleLoader {
+        ModuleLoader {
+            modules,
+            aliases: Vec::new(),
+            modules_loaded: RwLock::new(HashSet::new()),
+            kernel_root: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn load_module_detects_direct_cycle() {
+        let mut modules = HashMap::new();
+        modules.insert(
+            "a".to_string(),
+            Module {
+                filename: "kernel/a.ko".to_string(),
+                deps: vec!["b".to_string()],
+            },
+        );
+        modules.insert(
+            "b".to_string(),
+            Module {
+                filename: "kernel/b.ko".to_string(),
+                deps: vec!["a".to_string()],
+            },
+        );
+        let loader = loader_with_modules(modules);
+
+        let err = loader.load_module("a").unwrap_err();
+        assert!(err.to_string().contains("cycle detected"));
+    }
+
+    #[test]
+    fn load_module_detects_self_cycle() {
+        let mut modules = HashMap::new();
+        modules.insert(
+            "a".to_string(),
+            Module {
+                filename: "kernel/a.ko".to_string(),
+                deps: vec!["a".to_string()],
+            },
+        );
+        let loader = loader_with_modules(modules);
+
+        let err = loader.load_module("a").unwrap_err();
+        assert!(err.to_string().contains("cycle detected"));
     }
 }
