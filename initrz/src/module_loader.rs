@@ -188,8 +188,25 @@ impl ModuleLoader {
 
     fn load_module_file(&self, module_name: &str, module_filename: &str) -> Result<bool> {
         let filename = self.kernel_root.join(module_filename);
-        let module_file =
-            File::open(&filename).with_context(|| format!("unable to open {:?}", filename))?;
+        let module_file = match File::open(&filename) {
+            Ok(f) => f,
+            // modules.dep/modules.alias are copied into the image whole (every module on the
+            // build host), but mkinitrz only bundles the .ko files a module actually needs
+            // (explicitly selected modules plus their dependency closure) - so a modalias can
+            // resolve to a module.dep entry whose .ko was never shipped. Treat that the same as
+            // "module not found" (a warning, not a hard error) instead of failing the whole
+            // uevent that triggered this modalias lookup.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                warn!(
+                    "module {} ({:?}) not found in the initramfs image, skipping",
+                    module_name, filename
+                );
+                return Ok(false);
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("unable to open {:?}", filename));
+            }
+        };
 
         let buf = match FileFormat::from_file(&filename)? {
             FileFormat::Zstandard => zstd::stream::decode_all(BufReader::new(module_file))?,
