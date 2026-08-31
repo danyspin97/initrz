@@ -156,15 +156,17 @@ impl Initramfs {
         if !self.add_file_with_path(exe, path)? {
             return Ok(());
         }
+        let kind = depend::elf_kind(exe)
+            .with_context(|| format!("unable to determine ELF class of {exe}"))?;
         depend::resolve(Utf8Path::new(exe))
             .with_context(|| format!("unable to get libraries linked to {exe}"))?
             .iter()
-            .try_for_each(|lib| self.add_library(lib))?;
+            .try_for_each(|lib| self.add_library(lib, kind))?;
 
         Ok(())
     }
 
-    fn add_library(&mut self, lib: &str) -> Result<()> {
+    fn add_library(&mut self, lib: &str, expected_kind: object::read::FileKind) -> Result<()> {
         // Fallback paths for systems without a usable /etc/ld.so.conf (or where it doesn't list
         // the standard directories, since ldconfig adds those implicitly). ld.so.conf's own
         // paths - which cover distro-specific layouts like Debian's multiarch
@@ -175,15 +177,18 @@ impl Initramfs {
         let full_path = ldconf::search_paths()
             .into_iter()
             .chain(FALLBACK_PATHS.iter().map(Utf8PathBuf::from))
-            .find_map(|path| {
+            .filter_map(|path| {
                 let path = path.join(lib);
-                if path.exists() {
-                    Some(path)
-                } else {
-                    None
-                }
+                path.exists().then_some(path)
             })
-            .with_context(|| format!("unable to find library {}", lib))?;
+            // ld.so.conf.d can list directories for multiple architectures at once (Debian/Ubuntu
+            // multiarch, e.g. i386-linux-gnu alongside x86_64-linux-gnu): a same-named library can
+            // exist in more than one of them, so skip any candidate whose ELF class doesn't match
+            // the binary that needs it rather than silently bundling a wrong-architecture .so.
+            .find(|path| matches!(depend::elf_kind(path), Ok(kind) if kind == expected_kind))
+            .with_context(|| {
+                format!("unable to find library {} for the right architecture", lib)
+            })?;
         if !self.add_file(&full_path)? {
             return Ok(());
         }
@@ -191,7 +196,7 @@ impl Initramfs {
         depend::resolve(Utf8Path::new(&full_path))
             .with_context(|| format!("unable to get libraries linked to {full_path}"))?
             .iter()
-            .try_for_each(|lib| self.add_library(lib))?;
+            .try_for_each(|lib| self.add_library(lib, expected_kind))?;
 
         Ok(())
     }

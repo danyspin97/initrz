@@ -15,6 +15,15 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 
+/// Returns the ELF class (32- vs 64-bit) of the file at `path`, without doing the full
+/// DT_NEEDED walk that `resolve()` does. Used to reject a same-named library found on a
+/// different architecture's search path (e.g. a multiarch `/usr/lib/i386-linux-gnu` picked up
+/// alongside `/usr/lib/x86_64-linux-gnu` from `ld.so.conf.d`).
+pub fn elf_kind(path: &Utf8Path) -> Result<FileKind> {
+    let data = fs::read(path)?;
+    FileKind::parse(&*data).with_context(|| format!("unable to parse ELF header of {}", path))
+}
+
 pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
     let data = fs::read(path)?;
     let kind = FileKind::parse(&*data)?;
