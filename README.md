@@ -166,7 +166,7 @@ Three layers, each catching a different class of bug (see the CI-related session
 several real, boot-breaking bugs were only ever caught by the layer below the one that "should
 have" caught them):
 
-1. **Unit tests** (`cargo test --workspace`, 80 tests as of this writing: 73 in `initrz`, 7 in
+1. **Unit tests** (`cargo test --workspace`, 82 tests as of this writing: 74 in `initrz`, 8 in
    `mkinitrz`). Mostly pure-function tests: cmdline parsing, crypttab parsing, uevent
    parsing, LVM metadata-text parsing (including a byte-for-byte synthetic PV image
    constructed field-by-field per the on-disk spec — this is what actually caught a label
