@@ -252,7 +252,18 @@ fn main() {
             .and_then(|runtime| runtime.block_on(run_rescue_shell()));
 
         if let Err(err) = rescue_result {
-            error!("failed to run rescue shell: {:?}", err);
+            // The brush-based rescue shell has a much larger failure surface than a plain exec
+            // (building a tokio runtime, an async shell, interactive-mode setup) - if any of
+            // that fails, fall back to exec'ing busybox sh directly, same as initrz always did
+            // before: a single execve() that basically only fails if busybox is missing.
+            error!(
+                "failed to run rescue shell: {:?}, falling back to busybox sh",
+                err
+            );
+            // No PATH is ever set in this environment, so this has to be the absolute path
+            // busybox is bundled at (see mkinitrz's Initramfs::new), not a bare "busybox".
+            let err = Command::new("/bin/busybox").arg("sh").exec();
+            error!("failed to exec busybox sh: {:?}", err);
             std::process::exit(1);
         }
     }
