@@ -163,8 +163,24 @@ pub fn create_and_activate(name: &str, targets: &[DmTarget]) -> Result<()> {
     let ctrl = open_control()?;
 
     let mut header = new_header(name)?;
-    unsafe { dm_dev_create(ctrl.as_raw_fd(), &mut header) }
-        .with_context(|| format!("DM_DEV_CREATE failed for {:?}", name))?;
+    match unsafe { dm_dev_create(ctrl.as_raw_fd(), &mut header) } {
+        Ok(_) => {}
+        // A volume group with multiple PVs gets one uevent per PV, and each one runs the whole
+        // VG activation again - so by the time the second PV's uevent gets here, the first PV's
+        // uevent has typically already created and activated every logical volume in the VG.
+        // Treat "device already exists" as success instead of aborting the boot: the earlier
+        // invocation already loaded a table and activated it, and there is nothing left to do.
+        Err(nix::errno::Errno::EEXIST) => {
+            log::debug!(
+                "device-mapper device {:?} already exists, assuming it's already activated",
+                name
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("DM_DEV_CREATE failed for {:?}", name));
+        }
+    }
 
     // From here on, the device-mapper node exists in the kernel (and a uevent for it has
     // already fired). If anything below fails, remove it instead of returning early and leaving
