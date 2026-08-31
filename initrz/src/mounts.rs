@@ -192,7 +192,7 @@ fn open_and_mount(
     let fstype = CString::new(fstype)?;
 
     let fs = Fs::open(&fstype, FsopenFlags::empty())
-        .with_context(|| format!("unable to open a filesystem context of type {:?}", &fstype))?;
+        .with_context(|| format!("unable to open a filesystem context of type {:?}", fstype))?;
     let source_str: CString = CString::new("source")?;
     let source_c = CString::new(source)?;
     fs.set_string(&source_str, &source_c)
@@ -230,7 +230,7 @@ fn open_and_mount(
     fs.create().with_context(|| {
         format!(
             "unable to create filesystem context of type {:?} for source {:?}",
-            &fstype, source_c
+            fstype, source_c
         )
     })?;
     fs.mount(FsmountFlags::empty(), attr_flags)
