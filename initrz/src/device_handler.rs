@@ -194,19 +194,19 @@ impl DeviceHandler {
             .blkid_cache
             .get_tag_value("UUID", &PathBuf::from(path))
             .unwrap_or_default();
-        // Try path match first, then UUID match
-        if let Some(pos) = self
+        // Try path match first, then UUID match. This has to be two separate passes rather than
+        // one position() with an OR'd predicate: if both a Path-identified and a Uuid-identified
+        // entry match the same device, list order alone must not decide which one wins.
+        let pos = self
             .encrypted_devices
             .iter()
-            .position(|d| match &d.identifier {
-                Identifier::Path(saved_path) => saved_path == path,
-                Identifier::Uuid(saved_uuid) => saved_uuid == &uuid,
-            })
-        {
-            Some(&mut self.encrypted_devices[pos])
-        } else {
-            None
-        }
+            .position(|d| matches!(&d.identifier, Identifier::Path(saved_path) if saved_path == path))
+            .or_else(|| {
+                self.encrypted_devices.iter().position(
+                    |d| matches!(&d.identifier, Identifier::Uuid(saved_uuid) if saved_uuid == &uuid),
+                )
+            });
+        pos.map(|pos| &mut self.encrypted_devices[pos])
     }
 
     pub fn get_root(self) -> Option<RootDevice> {
