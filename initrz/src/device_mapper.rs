@@ -51,6 +51,7 @@ struct DmTargetSpecHeader {
 ioctl_readwrite!(dm_dev_create, DM_IOCTL, 0x03, DmIoctlHeader);
 ioctl_readwrite!(dm_dev_remove, DM_IOCTL, 0x04, DmIoctlHeader);
 ioctl_readwrite!(dm_dev_suspend, DM_IOCTL, 0x06, DmIoctlHeader);
+ioctl_readwrite!(dm_dev_status, DM_IOCTL, 0x07, DmIoctlHeader);
 ioctl_readwrite!(dm_table_load, DM_IOCTL, 0x09, DmIoctlHeader);
 
 /// One row of a device-mapper table: `<start_sector> <length_sectors> <target_type> <params>`,
@@ -168,14 +169,29 @@ pub fn create_and_activate(name: &str, targets: &[DmTarget]) -> Result<()> {
         // A volume group with multiple PVs gets one uevent per PV, and each one runs the whole
         // VG activation again - so by the time the second PV's uevent gets here, the first PV's
         // uevent has typically already created and activated every logical volume in the VG.
-        // Treat "device already exists" as success instead of aborting the boot: the earlier
-        // invocation already loaded a table and activated it, and there is nothing left to do.
+        // But EEXIST only proves a device node with this name exists, not that it has a live
+        // table: it could be a tableless device left over from an earlier create_and_activate()
+        // call whose DM_TABLE_LOAD/DM_DEV_SUSPEND failed and whose own cleanup (dm_dev_remove,
+        // below) also failed. Query DM_DEV_STATUS and only skip activation if it reports an
+        // already-loaded table; otherwise fall through and (re)activate normally.
         Err(nix::errno::Errno::EEXIST) => {
+            let mut status_header = new_header(name)?;
+            let has_table = unsafe { dm_dev_status(ctrl.as_raw_fd(), &mut status_header) }
+                .map(|_| status_header.target_count > 0)
+                .unwrap_or(false);
+
+            if has_table {
+                log::debug!(
+                    "device-mapper device {:?} already exists with a loaded table, assuming it's already activated",
+                    name
+                );
+                return Ok(());
+            }
+
             log::debug!(
-                "device-mapper device {:?} already exists, assuming it's already activated",
+                "device-mapper device {:?} already exists but has no loaded table, activating it",
                 name
             );
-            return Ok(());
         }
         Err(err) => {
             return Err(err).with_context(|| format!("DM_DEV_CREATE failed for {:?}", name));
