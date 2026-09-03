@@ -156,10 +156,9 @@ impl Initramfs {
         if !self.add_file_with_path(exe, path)? {
             return Ok(());
         }
-        let kind = depend::elf_kind(exe)
-            .with_context(|| format!("unable to determine ELF class of {exe}"))?;
-        depend::resolve(Utf8Path::new(exe))
-            .with_context(|| format!("unable to get libraries linked to {exe}"))?
+        let (kind, needed) = depend::inspect(exe)
+            .with_context(|| format!("unable to inspect ELF {exe}"))?;
+        needed
             .iter()
             .try_for_each(|lib| self.add_library(lib, kind))?;
 
@@ -174,26 +173,41 @@ impl Initramfs {
         const FALLBACK_PATHS: [&str; 5] =
             ["/usr/lib64", "/usr/lib", "/lib64", "/lib", "/usr/local/lib"];
 
-        let full_path = ldconf::search_paths()
+        // ld.so.conf.d can list directories for multiple architectures at once (Debian/Ubuntu
+        // multiarch, e.g. i386-linux-gnu alongside x86_64-linux-gnu): a same-named library can
+        // exist in more than one of them, so skip any candidate whose ELF class doesn't match the
+        // binary that needs it rather than silently bundling a wrong-architecture .so. Candidates
+        // are read once each: the matching one's already-read bytes are reused below instead of
+        // reading the file a second time to resolve its DT_NEEDED list.
+        let mut found = None;
+        for path in ldconf::search_paths()
             .into_iter()
             .chain(FALLBACK_PATHS.iter().map(Utf8PathBuf::from))
             .filter_map(|path| {
                 let path = path.join(lib);
                 path.exists().then_some(path)
             })
-            // ld.so.conf.d can list directories for multiple architectures at once (Debian/Ubuntu
-            // multiarch, e.g. i386-linux-gnu alongside x86_64-linux-gnu): a same-named library can
-            // exist in more than one of them, so skip any candidate whose ELF class doesn't match
-            // the binary that needs it rather than silently bundling a wrong-architecture .so.
-            .find(|path| matches!(depend::elf_kind(path), Ok(kind) if kind == expected_kind))
-            .with_context(|| {
-                format!("unable to find library {} for the right architecture", lib)
-            })?;
+        {
+            match depend::read_elf(&path) {
+                Ok((kind, data)) if kind == expected_kind => {
+                    found = Some((path, kind, data));
+                    break;
+                }
+                Ok(_) => continue,
+                Err(err) => {
+                    log::warn!("skipping candidate library {}: {:#}", path, err);
+                }
+            }
+        }
+        let (full_path, kind, data) = found.with_context(|| {
+            format!("unable to find library {} for the right architecture", lib)
+        })?;
+
         if !self.add_file(&full_path)? {
             return Ok(());
         }
 
-        depend::resolve(Utf8Path::new(&full_path))
+        depend::resolve_from(kind, &data)
             .with_context(|| format!("unable to get libraries linked to {full_path}"))?
             .iter()
             .try_for_each(|lib| self.add_library(lib, expected_kind))?;

@@ -15,30 +15,30 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 
-/// Returns the ELF class (32- vs 64-bit) of the file at `path`, without doing the full
-/// DT_NEEDED walk that `resolve()` does. Used to reject a same-named library found on a
-/// different architecture's search path (e.g. a multiarch `/usr/lib/i386-linux-gnu` picked up
-/// alongside `/usr/lib/x86_64-linux-gnu` from `ld.so.conf.d`).
-pub fn elf_kind(path: &Utf8Path) -> Result<FileKind> {
+/// Reads `path` once and returns both its ELF class and raw bytes, so a caller that needs the
+/// class and then the DT_NEEDED list doesn't read and parse the same file twice.
+pub fn read_elf(path: &Utf8Path) -> Result<(FileKind, Vec<u8>)> {
     let data = fs::read(path)?;
-    FileKind::parse(&*data).with_context(|| format!("unable to parse ELF header of {}", path))
+    let kind =
+        FileKind::parse(&*data).with_context(|| format!("unable to parse ELF header of {}", path))?;
+    Ok((kind, data))
 }
 
-pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
-    let data = fs::read(path)?;
-    let kind = FileKind::parse(&*data)?;
-
+/// Extracts the DT_NEEDED sonames from already-read ELF `data` of the given `kind`, without
+/// touching the filesystem. Lets a caller that already read the file (e.g. to check its ELF
+/// class) resolve its dependencies without reading it again.
+pub fn resolve_from(kind: FileKind, data: &[u8]) -> Result<Vec<String>> {
     let needed = match kind {
         FileKind::Elf32 => {
-            let elf = FileHeader32::<Endianness>::parse(&*data)?;
-            elf_needed(elf, &data)
+            let elf = FileHeader32::<Endianness>::parse(data)?;
+            elf_needed(elf, data)
         }
         FileKind::Elf64 => {
-            let elf = FileHeader64::<Endianness>::parse(&*data)?;
-            elf_needed(elf, &data)
+            let elf = FileHeader64::<Endianness>::parse(data)?;
+            elf_needed(elf, data)
         }
         _ => {
-            error!("Failed to parse binary at {}", path);
+            error!("Failed to parse binary");
             bail!("only ELF files are supported");
         }
     }?;
@@ -51,6 +51,14 @@ pub fn resolve(path: &Utf8Path) -> Result<Vec<String>> {
                 .with_context(|| format!("library name {:?} is not valid UTF-8", s))
         })
         .collect()
+}
+
+/// Reads `path` once and returns both its ELF class and the sonames it needs, in a single
+/// filesystem read and header parse.
+pub fn inspect(path: &Utf8Path) -> Result<(FileKind, Vec<String>)> {
+    let (kind, data) = read_elf(path)?;
+    let needed = resolve_from(kind, &data)?;
+    Ok((kind, needed))
 }
 
 fn elf_needed<T>(elf: &T, data: &[u8]) -> Result<Vec<std::ffi::OsString>>
@@ -107,7 +115,7 @@ mod tests {
     fn test_resolver() -> Result<()> {
         let ls = Utf8Path::new("/bin/ls");
         if ls.exists() {
-            let deps = resolve(ls)?;
+            let (_, deps) = inspect(ls)?;
             assert!(
                 deps.iter().any(|lib| lib.starts_with("libc")),
                 "expected libc in dependencies of /bin/ls, got: {:?}",
